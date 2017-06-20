@@ -9,7 +9,7 @@ import random
 from conf import conf
 from shapely.wkb import loads as loadWKB
 from shapely.ops import transform as reproject
-from shapely.geometry import Point, asShape
+from shapely.geometry import asShape
 
 
 print_lock = threading.Lock()
