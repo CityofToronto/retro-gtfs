@@ -14,7 +14,7 @@ mode = raw_input('Processing mode (single or range) --> ')
 # single mode enters one trip at a time and stops when 
 # a non-integer is entered
 if mode == 'single':
-	trip_id = raw_input('trip_id to process--> ')
+	trip_id = raw_input('trip_id to process --> ')
 	while trip_id.isdigit():
 		if db.trip_exists(trip_id):
 			# create a trip object

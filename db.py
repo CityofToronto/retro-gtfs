@@ -348,7 +348,6 @@ def scrub_trip(trip_id):
 	"""Un-mark any flag fields and leave the DB record 
 		as though newly collected and unprocessed"""
 	c = cursor()
-	query = 
 	c.execute(
 		"""
 			-- Trips table
