@@ -55,15 +55,16 @@ def empty_tables():
 	"""clear the tables"""
 	c = cursor()
 	c.execute("""
-		TRUNCATE nb_trips;
-		TRUNCATE nb_vehicles;
+		--TRUNCATE nb_trips;
+		--TRUNCATE nb_vehicles;
 		TRUNCATE nb_stop_times;
-		TRUNCATE nb_directions;
-		TRUNCATE nb_stops;
+		--TRUNCATE nb_directions;
+		--TRUNCATE gtfs_stops;
 	""")
 
 def copy_vehicles(filename):
-	"""copy a CSV of vehicle records into the nb_vehicles table"""
+	"""Copy a CSV of vehicle records into the nb_vehicles table.
+		This exists because copying is much faster than inserting."""
 	c = cursor()
 	c.execute("""
 		COPY nb_vehicles (trip_id,seq,lon,lat,report_time) FROM %s CSV;
@@ -74,13 +75,16 @@ def copy_vehicles(filename):
 def trip_length(trip_id):
 	"""return the length of the trip in KM"""
 	c = cursor()
-	c.execute("""
-		SELECT 
-			ST_Length(ST_MakeLine(location ORDER BY seq)) / 1000
-		FROM nb_vehicles 
-		WHERE trip_id = %s AND NOT ignore
-		GROUP BY trip_id;
-	""",(trip_id,))
+	c.execute(
+		"""
+			SELECT 
+				ST_Length(ST_MakeLine(location ORDER BY seq)) / 1000
+			FROM {vehicles} 
+			WHERE trip_id = %(trip_id)s AND NOT ignore
+			GROUP BY trip_id;
+		""".format(**conf['db']['tables']),
+		{'trip_id':trip_id}
+	)
 	if c.rowcount == 1:
 		(km,) = c.fetchone()
 		return km
@@ -96,11 +100,13 @@ def delete_trip(trip_id,reason=None):
 def ignore_trip(trip_id,reason=None):
 	"""mark a trip to be ignored"""
 	c = cursor()
-	c.execute("""
-		UPDATE nb_vehicles SET ignore = TRUE WHERE trip_id = %s;
-		UPDATE nb_trips SET ignore = TRUE WHERE trip_id = %s;
-		DELETE FROM nb_stop_times WHERE trip_id = %s;
-	""",(trip_id,trip_id,trip_id) )
+	c.execute(
+		"""
+			UPDATE {vehicles} SET ignore = TRUE WHERE trip_id = %(trip_id)s;
+			UPDATE {trips} SET ignore = TRUE WHERE trip_id = %(trip_id)s;
+			DELETE FROM {stop_times} WHERE trip_id = %(trip_id)s;
+		""".format(**conf['db']['tables']),
+		{'trip_id':trip_id} )
 	if reason:
 		flag_trip(trip_id,reason)
 	return
@@ -111,8 +117,15 @@ def flag_trip(trip_id,problem_description_string):
 		have gone wrong"""
 	c = cursor()
 	c.execute(
-		"UPDATE nb_trips SET problem = problem || %s WHERE trip_id = %s;",
-		(problem_description_string,trip_id,)
+		"""
+			UPDATE {trips} 
+			SET problem = problem || %(problem)s 
+			WHERE trip_id = %(trip_id)s;
+		""".format(**conf['db']['tables']),
+		{
+			'problem':problem_description_string,
+			'trip_id':trip_id
+		}
 	)
 
 
@@ -121,13 +134,19 @@ def add_trip_match(trip_id,confidence,geometry_match):
 	"""update the trip record with it's matched geometry"""
 	c = cursor()
 	# store the given values
-	c.execute("""
-		UPDATE nb_trips
-		SET  
-			match_confidence = %s,
-			match_geom = ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON(%s),4326),26917)
-		WHERE trip_id  = %s;
-		""",( confidence, geometry_match, trip_id)
+	c.execute(
+		"""
+			UPDATE {trips}
+			SET  
+				match_confidence = %(confidence)s,
+				match_geom = ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON(%(match_geom)s),4326),32723)
+			WHERE trip_id  = %(trip_id)s;
+		""".format(conf['db']['tables']),
+		{
+			'confidence':confidence, 
+			'match_geom':geometry_match, 
+			'trip_id':trip_id
+		}
 	)
 
 
@@ -150,6 +169,7 @@ def get_stops(direction_id):
 	"""given the direction id, get the ordered list of stops
 		and their attributes for the direction, returning 
 		as a dictionary"""
+	# TODO is this actually ordered? Does it need to be?
 	c = cursor()
 	c.execute("""
 		WITH sub AS (
@@ -157,17 +177,12 @@ def get_stops(direction_id):
 				unnest(stops) AS stop_id
 			FROM nb_directions 
 			WHERE
-				direction_id = %s AND
-				report_time = (
-					SELECT MAX(report_time) -- most recent 
-					FROM nb_directions 
-					WHERE direction_id = %s
-				)
+				direction_id = %s
 		)
 		SELECT 
 			stop_id,
 			the_geom
-		FROM nb_stops
+		FROM gtfs_stops
 		WHERE stop_id IN (SELECT stop_id FROM sub);
 	""",(direction_id,direction_id))
 	stops = []
@@ -258,7 +273,7 @@ def try_storing_stop(stop_id,stop_name,stop_code,lon,lat):
 	c = cursor()
 	# see if precisely this record already exists
 	c.execute("""
-		SELECT * FROM nb_stops
+		SELECT * FROM gtfs_stops
 		WHERE 
 			stop_id = %s AND
 			stop_name = %s AND
@@ -271,7 +286,7 @@ def try_storing_stop(stop_id,stop_name,stop_code,lon,lat):
 		return
 	# store the stop
 	c.execute("""
-		INSERT INTO nb_stops ( 
+		INSERT INTO gtfs_stops ( 
 			stop_id, stop_name, stop_code, 
 			the_geom, 
 			lon, lat, report_time 
@@ -333,26 +348,29 @@ def scrub_trip(trip_id):
 	"""Un-mark any flag fields and leave the DB record 
 		as though newly collected and unprocessed"""
 	c = cursor()
-	c.execute("""
-		-- Trips table
-		UPDATE nb_trips SET 
-			match_confidence = NULL,
-			match_geom = NULL,
-			orig_geom = NULL,
-			clean_geom = NULL,
-			problem = '',
-			ignore = FALSE 
-		WHERE trip_id = %s;
+	query = 
+	c.execute(
+		"""
+			-- Trips table
+			UPDATE {trips} SET 
+				match_confidence = NULL,
+				match_geom = NULL,
+				orig_geom = NULL,
+				clean_geom = NULL,
+				problem = '',
+				ignore = FALSE 
+			WHERE trip_id = %(trip_id)s;
 
-		-- Vehicles table
-		UPDATE nb_vehicles SET
-			ignore = FALSE
-		WHERE trip_id = %s;
+			-- Vehicles table
+			UPDATE {vehicles} SET
+				ignore = FALSE
+			WHERE trip_id = %(trip_id)s;
 
-		-- Stop-Times table
-		DELETE FROM nb_stop_times 
-		WHERE trip_id = %s;
-		""",(trip_id,trip_id,trip_id,)
+			-- Stop-Times table
+			DELETE FROM {stop_times} 
+			WHERE trip_id = %(trip_id)s;
+		""".format(**conf['db']['tables']),
+		{'trip_id':trip_id}
 	)
 
 
@@ -361,19 +379,24 @@ def get_trip(trip_id):
 	"""return the attributes of a stored trip necessary 
 		for the construction of a new trip object"""
 	c = cursor()
-	c.execute("""
-		SELECT 
-			block_id, direction_id, route_id, vehicle_id 
-		FROM nb_trips
-		WHERE trip_id = %s
-		""",(trip_id,)
+	c.execute(
+		"""
+			SELECT 
+				block_id, direction_id, route_id, vehicle_id 
+			FROM {trips}
+			WHERE trip_id = %(trip_id)s
+		""".format(**conf['db']['tables']), 
+		{'trip_id':trip_id}
 	)
 	(bid,did,rid,vid,) = c.fetchone()
-	c.execute("""
-		SELECT MAX(report_time) 
-		FROM nb_vehicles 
-		WHERE trip_id = %s AND NOT ignore
-		""",(trip_id,)
+
+	c.execute( 
+		"""
+			SELECT MAX(report_time) 
+			FROM {vehicles}
+			WHERE trip_id = %(trip_id)s AND NOT ignore
+		""".format(**conf['db']['tables']), 
+		{'trip_id':trip_id} 
 	)
 	(last_seen,) = c.fetchone()
 	return (bid,did,rid,vid,last_seen)
@@ -382,13 +405,14 @@ def get_trip(trip_id):
 def get_trip_ids(min_id,max_id):
 	"""return a list of all trip ids in the specified range"""
 	c = cursor()
-	c.execute("""
-		SELECT trip_id 
-		FROM nb_trips 
-		WHERE trip_id 
-		BETWEEN %s AND %s 
-		ORDER BY trip_id DESC
-		""",(min_id,max_id,)
+	c.execute(
+		"""
+			SELECT trip_id 
+			FROM {trips}
+			WHERE trip_id BETWEEN %(min)s AND %(max)s 
+			ORDER BY trip_id DESC
+		""".format(conf['db']['tables']),
+		{'min':min_id,'max':max_id}
 	)
 	return [ result for (result,) in c.fetchall() ]
 
@@ -397,9 +421,13 @@ def trip_exists(trip_id):
 	"""check whether a trip exists in the database, 
 		returning boolean"""
 	c = cursor()
-	c.execute("""
-		SELECT EXISTS (SELECT * FROM nb_trips WHERE trip_id = %s)
-		""",(trip_id,)
+	c.execute(
+		"""
+			SELECT EXISTS (
+				SELECT * FROM {trips} 
+				WHERE trip_id = %(trip_id)s)
+		""".format(**conf['db']['tables']),
+		{'trip_id':trip_id}
 	)
 	(existence,) = c.fetchone()
 	return existence
@@ -410,13 +438,15 @@ def get_vehicles(trip_id):
 	c = cursor()
 	# get the trip geometry and timestamps
 	c.execute("""
-		SELECT
-			uid, lat, lon, report_time,
-			ST_Transform(ST_SetSRID(ST_MakePoint(lon,lat),4326),26917) AS geom
-		FROM nb_vehicles 
-		WHERE trip_id = %s
-		ORDER BY report_time ASC;
-	""",(trip_id,))
+			SELECT
+				uid, ST_Y(geom) AS lat, ST_X(geom) AS lon, report_time,
+				ST_Transform(geom,32723) AS geom
+			FROM {vehicles} 
+			WHERE trip_id = %(trip_id)s
+			ORDER BY report_time ASC;
+		""".format(**conf['db']['tables']),
+		{'trip_id':trip_id}
+	)
 	vehicles = []
 	for (uid,lat,lon,time,geom) in c.fetchall():
 		vehicles.append({
