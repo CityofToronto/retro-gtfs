@@ -119,11 +119,11 @@ class trip(object):
 		# and be sure to projejct it correctly...
 		self.match_geom = reproject( conf['projection'], self.match_geom )
 
-#		db.add_trip_match(
-#			self.trip_id,
-#			self.match_confidence,
-#			json.dumps(match['geometry'])
-#		)
+		db.add_trip_match(
+			self.trip_id,
+			self.match_confidence,
+			json.dumps(match['geometry'])
+		)
 
 		# get the times for the waypoints from the vehicle locations
 		# compare to the corresponding points on the matched line 
@@ -170,7 +170,7 @@ class trip(object):
 		if len(self.stops) > 1:
 			db.finish_trip(self)
 		else:
-			db.ignore_trip(self.trip_id,'only one stop time estimated')
+			db.ignore_trip(self.trip_id,'fewer than two stop times estimated')
 		return
 
 

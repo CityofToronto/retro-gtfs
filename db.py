@@ -141,7 +141,7 @@ def add_trip_match(trip_id,confidence,geometry_match):
 				match_confidence = %(confidence)s,
 				match_geom = ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON(%(match_geom)s),4326),32723)
 			WHERE trip_id  = %(trip_id)s;
-		""".format(conf['db']['tables']),
+		""".format(**conf['db']['tables']),
 		{
 			'confidence':confidence, 
 			'match_geom':geometry_match, 
@@ -171,20 +171,23 @@ def get_stops(direction_id):
 		as a dictionary"""
 	# TODO is this actually ordered? Does it need to be?
 	c = cursor()
-	c.execute("""
-		WITH sub AS (
-			SELECT
-				unnest(stops) AS stop_id
-			FROM nb_directions 
-			WHERE
-				direction_id = %s
-		)
-		SELECT 
-			stop_id,
-			the_geom
-		FROM gtfs_stops
-		WHERE stop_id IN (SELECT stop_id FROM sub);
-	""",(direction_id,direction_id))
+	c.execute(
+		"""
+			WITH sub AS (
+				SELECT
+					unnest(stops) AS stop_id
+				FROM {directions} 
+				WHERE
+					direction_id = %(direction_id)s
+			)
+			SELECT 
+				stop_id,
+				the_geom
+			FROM {stops}
+			WHERE stop_id IN (SELECT stop_id FROM sub);
+		""".format(**conf['db']['tables']),
+		{'direction_id':direction_id}
+	)
 	stops = []
 	for (stop_id,geom) in c.fetchall():
 		stops.append({
@@ -410,7 +413,7 @@ def get_trip_ids(min_id,max_id):
 			FROM {trips}
 			WHERE trip_id BETWEEN %(min)s AND %(max)s 
 			ORDER BY trip_id DESC
-		""".format(conf['db']['tables']),
+		""".format(**conf['db']['tables']),
 		{'min':min_id,'max':max_id}
 	)
 	return [ result for (result,) in c.fetchall() ]

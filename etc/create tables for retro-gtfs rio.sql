@@ -61,7 +61,6 @@ This includes:
 - stop_times table for storing data
 */
 
-
 DROP TABLE IF EXISTS rio2014_stop_times;
 CREATE TABLE rio2014_stop_times(
 	uid serial PRIMARY KEY,
@@ -74,3 +73,38 @@ CREATE TABLE rio2014_stop_times(
 );
 CREATE INDEX rio2014_stop_times_idx ON rio2014_stop_times (trip_id);
 CLUSTER rio2014_stop_times USING rio2014_stop_times_idx;
+
+-- now the directions table
+DROP TABLE IF EXISTS rio2014_directions;
+SELECT 
+	DISTINCT 
+		t.route_id,
+		r.route_short_name,
+		r.route_long_name,
+		r.route_desc,
+		t.trip_headsign,
+		array_agg(stop_id::text ORDER BY stop_sequence ASC) AS stops
+INTO rio2014_directions
+FROM 
+	gtfs_stop_times AS st 
+	JOIN gtfs_trips AS t
+		ON st.trip_id = t.trip_id
+	JOIN gtfs_routes AS r 
+		ON t.route_id = r.route_id
+GROUP BY t.route_id, t.trip_headsign, r.route_short_name, r.route_long_name, r.route_desc;
+ALTER TABLE rio2014_directions 
+	ADD COLUMN direction_id serial PRIMARY KEY;
+	
+/*
+Update trip_ids for vehicles
+...this part takes the longest probably
+*/
+
+UPDATE rio2014_vehicles SET trip_id = the_trip_id 
+FROM (
+	SELECT 
+		trip_id AS the_trip_id, 
+		unnest(vehicle_uids) AS vuid
+	FROM rio2014_trips
+) AS sub
+WHERE vuid = uid;
