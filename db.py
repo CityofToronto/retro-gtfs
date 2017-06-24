@@ -243,7 +243,13 @@ def finish_trip(trip):
 		records.append( (trip.trip_id,stop['id'],stop['arrival'],seq) )
 		seq += 1
 	args_str = ','.join(c.mogrify("(%s,%s,%s,%s)", x) for x in records)
-	c.execute("INSERT INTO nb_stop_times (trip_id, stop_id, etime, stop_sequence) VALUES " + args_str)
+	c.execute(
+		"""
+			INSERT INTO {stop_times} 
+				(trip_id, stop_id, etime, stop_sequence) 
+			VALUES 
+		""".format(**conf['db']['tables']) + args_str
+	)
 
 	# get the first start time
 	t = trip.stops[0]['arrival']
@@ -254,17 +260,31 @@ def finish_trip(trip):
 	# service_id is distinct to local day
 	service_id = (tlocal-from_dawn)/(24*3600)
 	day_start = t - from_dawn
-	c.execute("""
-		UPDATE nb_trips SET service_id = %s WHERE trip_id = %s;
-	""",(service_id,trip.trip_id))
+	c.execute(
+		"""
+			UPDATE {trips} 
+			SET service_id = %(service_id)s 
+			WHERE trip_id = %(trip_id)s;
+		""".format(**conf['db']['tables']),
+		{
+			'service_id':service_id,
+			'trip_id':trip.trip_id
+		}
+	)
 
 	# set the arrival and departure times
-	c.execute("""
-		UPDATE nb_stop_times SET 
-			arrival_time = ROUND(etime - %s) * INTERVAL '1 second',
-			departure_time = ROUND(etime - %s) * INTERVAL '1 second'
-		WHERE trip_id = %s;
-	""",(day_start,day_start,trip.trip_id))
+	c.execute(
+		"""
+			UPDATE {stop_times} SET 
+				arrival_time = ROUND(etime - %(day_start)s) * INTERVAL '1 second',
+				departure_time = ROUND(etime - %(day_start)s) * INTERVAL '1 second'
+			WHERE trip_id = %(trip_id)s;
+		""".format(**conf['db']['tables']),
+		{
+			'day_start':day_start,
+			'trip_id':trip.trip_id
+		}
+	)
 
 
 def try_storing_stop(stop_id,stop_name,stop_code,lon,lat):
@@ -357,7 +377,7 @@ def scrub_trip(trip_id):
 			UPDATE {trips} SET 
 				match_confidence = NULL,
 				match_geom = NULL,
-				orig_geom = NULL,
+				--orig_geom = NULL,
 				clean_geom = NULL,
 				problem = '',
 				ignore = FALSE 
@@ -439,7 +459,8 @@ def get_vehicles(trip_id):
 	"""returns full projected vehicle linestring and times"""
 	c = cursor()
 	# get the trip geometry and timestamps
-	c.execute("""
+	c.execute(
+		"""
 			SELECT
 				uid, ST_Y(geom) AS lat, ST_X(geom) AS lon, report_time,
 				ST_Transform(geom,32723) AS geom
@@ -459,5 +480,23 @@ def get_vehicles(trip_id):
 			'lon':	lon
 		})
 	return vehicles
+
+def get_route_directions(route_id):
+	"""This may only be useful for the rio data.
+		Return direction_id's for a given route"""
+	c = cursor()
+	# remove any decimal from the route_id
+	route_id = route_id.split('.')[0]
+	c.execute(
+		"""
+			SELECT 
+				direction_id
+			FROM {directions} 
+			WHERE route_short_name = %(route_id)s
+		""".format(**conf['db']['tables']),
+		{'route_id':route_id}
+	)
+	# return a list of direction IDs
+	return [ did for (did,) in c.fetchall() ]
 
 
