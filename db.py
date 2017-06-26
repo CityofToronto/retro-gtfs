@@ -72,25 +72,25 @@ def copy_vehicles(filename):
 
 
 
-def trip_length(trip_id):
-	"""return the length of the trip in KM"""
-	c = cursor()
-	c.execute(
-		"""
-			SELECT 
-				ST_Length(ST_MakeLine(location ORDER BY seq)) / 1000
-			FROM {vehicles} 
-			WHERE trip_id = %(trip_id)s AND NOT ignore
-			GROUP BY trip_id;
-		""".format(**conf['db']['tables']),
-		{'trip_id':trip_id}
-	)
-	if c.rowcount == 1:
-		(km,) = c.fetchone()
-		return km
-	else: 
-		print 'trip_length() error'
-		return 0
+#def trip_length(trip_id):
+#	"""return the length of the trip in KM"""
+#	c = cursor()
+#	c.execute(
+#		"""
+#			SELECT 
+#				ST_Length(ST_MakeLine(location ORDER BY seq)) / 1000
+#			FROM {vehicles} 
+#			WHERE trip_id = %(trip_id)s AND NOT ignore
+#			GROUP BY trip_id;
+#		""".format(**conf['db']['tables']),
+#		{'trip_id':trip_id}
+#	)
+#	if c.rowcount == 1:
+#		(km,) = c.fetchone()
+#		return km
+#	else: 
+#		print 'trip_length() error'
+#		return 0
 
 
 def delete_trip(trip_id,reason=None):
@@ -197,20 +197,29 @@ def get_stops(direction_id):
 	return stops
 
 
-#def set_trip_orig_geom(trip_id):
-#	"""simply take the vehicle records for this trip 
-#		and store them as a line geometry with the trip 
-#		record. ALL vehicles go in this line"""
-#	c = cursor()
-#	c.execute("""
-#		UPDATE nb_trips SET orig_geom = (
-#			SELECT ST_MakeLine(location ORDER BY seq ASC)
-#			FROM nb_vehicles 
-#			WHERE trip_id = %s
-#		)
-#		WHERE trip_id = %s;
-#		""",(trip_id,trip_id,)
-#	)
+def set_trip_orig_geom(trip_id):
+	"""simply take the vehicle records for this trip 
+		and store them as a line geometry with the trip 
+		record. ALL vehicles go in this line"""
+	c = cursor()
+	c.execute(
+		"""
+			UPDATE {trips} SET orig_geom = (
+				SELECT 
+					ST_Transform(
+						ST_MakeLine(geom ORDER BY report_time ASC),
+						%(projection)s
+					)
+				FROM {vehicles} 
+				WHERE trip_id = %(trip_id)s
+			)
+			WHERE trip_id = %(trip_id)s;
+		""".format(**conf['db']['tables']),
+		{
+			'trip_id':trip_id,
+			'projection':conf['localEPSG']
+		}
+	)
 
 
 #def set_trip_clean_geom(trip_id):
@@ -377,7 +386,6 @@ def scrub_trip(trip_id):
 			UPDATE {trips} SET 
 				match_confidence = NULL,
 				match_geom = NULL,
-				--orig_geom = NULL,
 				clean_geom = NULL,
 				problem = '',
 				ignore = FALSE 

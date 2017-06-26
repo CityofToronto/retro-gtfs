@@ -18,7 +18,7 @@ def map_match(vehicles,include_times=True):
 		times.append( int( round( v['time'] ) ) )
 	coords = ';'.join( [str(lon)+','+str(lat) for (lon,lat) in zip(lons,lats)] )
 	times = ';'.join( [str(time) for time in times] )
-	radii = ';'.join( ['20']*len(lons) )
+	radii = ';'.join( ['40']*len(lons) )
 	# construct and send the request
 	options = {
 		'geometries':'geojson',

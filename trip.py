@@ -119,6 +119,7 @@ class trip(object):
 		# and be sure to project it correctly...
 		self.match_geom = reproject( conf['projection'], self.match_geom )
 
+		# add geometries for debugging. Remove for faster action
 		db.add_trip_match(
 			self.trip_id,
 			self.match_confidence,
@@ -142,31 +143,8 @@ class trip(object):
 		if self.direction_id is None:
 			if self.route_id is None:
 				return db.ignore_trip(self.trip_id,'unknown direction & route IDs')
-			# we have a route, but no direction. We need to guess a 
-			# direction based on the route &c.
-			dids = db.get_route_directions(self.route_id)
-			# now determine which did is the best match
-			best_dist = float('inf')
-			best_did = None
-			for did in dids:
-				stops = db.get_stops(did)
-				# stops as shapely points
-				first_stop = reproject(
-					conf['projection'],
-					loadWKB(stops[0]['geom'],hex=True)
-				)
-				last_stop = reproject(
-					conf['projection'],
-					loadWKB(stops[-1]['geom'],hex=True)
-				)
-				first_point = Point(self.match_geom.coords[0])
-				last_point = Point(self.match_geom.coords[-1])
-				dist = first_stop.distance(first_point) + last_stop.distance(last_point)
-				print dist,'distance'
-				if dist < best_dist:
-					best_dist, best_did = dist, did
-			self.direction_id = best_did
-
+			# we must guess the direction ID from the route ID
+			self.direction_id = self.get_best_direction_id()
 		# get the stops as a list of objects
 		# with keys {'id':stop_id,'g':geom}
 		self.stops = db.get_stops(self.direction_id)
@@ -202,6 +180,33 @@ class trip(object):
 		else:
 			db.ignore_trip(self.trip_id,'fewer than two stop times estimated')
 		return
+
+
+	def get_best_direction_id(self):
+		"""we have a route, but no direction. We need to guess a 
+			direction based on the route &c."""
+		dids = db.get_route_directions(self.route_id)
+		# now determine which did is the best match
+		best_dist = float('inf')
+		best_did = None
+		for did in dids:
+			stops = db.get_stops(did)
+			# stops as shapely points
+			first_stop = reproject(
+				conf['projection'],
+				loadWKB(stops[0]['geom'],hex=True)
+			)
+			last_stop = reproject(
+				conf['projection'],
+				loadWKB(stops[-1]['geom'],hex=True)
+			)
+			first_point = Point(self.match_geom.coords[0])
+			last_point = Point(self.match_geom.coords[-1])
+			dist = first_stop.distance(first_point) + last_stop.distance(last_point)
+			print dist,'distance'
+			if dist < best_dist:
+				best_dist, best_did = dist, did
+		return best_did
 
 
 	def ignore_vehicle(self,index):
