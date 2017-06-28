@@ -102,7 +102,6 @@ def ignore_trip(trip_id,reason=None):
 	c = cursor()
 	c.execute(
 		"""
-			UPDATE {vehicles} SET ignore = TRUE WHERE trip_id = %(trip_id)s;
 			UPDATE {trips} SET ignore = TRUE WHERE trip_id = %(trip_id)s;
 			DELETE FROM {stop_times} WHERE trip_id = %(trip_id)s;
 		""".format(**conf['db']['tables']),
@@ -197,45 +196,40 @@ def get_stops(direction_id):
 	return stops
 
 
-def set_trip_orig_geom(trip_id):
+def set_trip_orig_geom(trip_id,localWKBgeom):
 	"""simply take the vehicle records for this trip 
 		and store them as a line geometry with the trip 
-		record. ALL vehicles go in this line"""
+		record. ALL initial vehicles go in this line"""
 	c = cursor()
 	c.execute(
 		"""
-			UPDATE {trips} SET orig_geom = (
-				SELECT 
-					ST_Transform(
-						ST_MakeLine(geom ORDER BY report_time ASC),
-						%(projection)s
-					)
-				FROM {vehicles} 
-				WHERE trip_id = %(trip_id)s
-			)
+			UPDATE {trips} 
+			SET orig_geom = ST_SetSRID( %(geom)s::geometry, %(EPSG)s )
 			WHERE trip_id = %(trip_id)s;
 		""".format(**conf['db']['tables']),
 		{
 			'trip_id':trip_id,
-			'projection':conf['localEPSG']
+			'geom':localWKBgeom,
+			'EPSG':conf['localEPSG']
 		}
 	)
 
 
-#def set_trip_clean_geom(trip_id):
-#	"""Store the UN-IGNORED vehicle records for this trip 
-#		as a line geometry with the trip record."""
-#	c = cursor()
-#	c.execute("""
-#		UPDATE nb_trips SET clean_geom = (
-#			SELECT ST_MakeLine(location ORDER BY seq ASC) 
-#			FROM nb_vehicles 
-#			WHERE trip_id = %s 
-#				AND NOT ignore
-#		)
-#		WHERE trip_id = %s;
-#		""",(trip_id,trip_id,)
-#	)
+def set_trip_clean_geom(trip_id,localWKBgeom):
+	"""Store a geometry of the input to the matching process"""
+	c = cursor()
+	c.execute(
+		"""
+			UPDATE {trips} 
+			SET clean_geom = ST_SetSRID( %(geom)s::geometry, %(EPSG)s )
+			WHERE trip_id = %(trip_id)s;
+		""".format(**conf['db']['tables']),
+		{
+			'trip_id':trip_id,
+			'geom':localWKBgeom,
+			'EPSG':conf['localEPSG']
+		}
+	)
 
 
 
@@ -391,11 +385,6 @@ def scrub_trip(trip_id):
 				ignore = FALSE 
 			WHERE trip_id = %(trip_id)s;
 
-			-- Vehicles table
-			UPDATE {vehicles} SET
-				ignore = FALSE
-			WHERE trip_id = %(trip_id)s;
-
 			-- Stop-Times table
 			DELETE FROM {stop_times} 
 			WHERE trip_id = %(trip_id)s;
@@ -419,17 +408,7 @@ def get_trip(trip_id):
 		{'trip_id':trip_id}
 	)
 	(bid,did,rid,vid,) = c.fetchone()
-
-	c.execute( 
-		"""
-			SELECT MAX(report_time) 
-			FROM {vehicles}
-			WHERE trip_id = %(trip_id)s AND NOT ignore
-		""".format(**conf['db']['tables']), 
-		{'trip_id':trip_id} 
-	)
-	(last_seen,) = c.fetchone()
-	return (bid,did,rid,vid,last_seen)
+	return (bid,did,rid,vid)
 
 
 def get_trip_ids(min_id,max_id):
@@ -471,12 +450,15 @@ def get_vehicles(trip_id):
 		"""
 			SELECT
 				uid, ST_Y(geom) AS lat, ST_X(geom) AS lon, report_time,
-				ST_Transform(geom,32723) AS geom
+				ST_Transform(geom,%(EPSG)s) AS geom
 			FROM {vehicles} 
 			WHERE trip_id = %(trip_id)s
 			ORDER BY report_time ASC;
 		""".format(**conf['db']['tables']),
-		{'trip_id':trip_id}
+		{
+			'trip_id':trip_id,
+			'EPSG':conf['localEPSG']
+		}
 	)
 	vehicles = []
 	for (uid,lat,lon,time,geom) in c.fetchall():
