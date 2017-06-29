@@ -21,11 +21,14 @@ def map_match(vehicles,include_times=True):
 	radii = ';'.join( ['40']*len(lons) )
 	# construct and send the request
 	options = {
+		'steps':'false',
 		'geometries':'geojson',
+		'annotations':'false',
 		'overview':'full',
 		'radiuses':radii,
 		'gaps':'split',	# split the track based on big time gaps?
-		'tidy':'true'
+		'tidy':'true',
+		'generate_hints':'false'
 	}
 	if include_times:
 		options['timestamps'] = times
@@ -36,10 +39,18 @@ def map_match(vehicles,include_times=True):
 	)
 	# parse the result
 	j = json.loads(response.text)
+	# TODO temp for debugging
+	# write the response for inspection
+	outfile = open('match.out.json','w')
+	outfile.write(response.text)
+	outfile.close()
+	# TODO end debugging. all above can be deleted
 	# see if there is more than one match. If there is, try again 
 	# without times. Avoid infinite recursion
 	if include_times: # was first try
+		# TODO stop doing this
 		if j['code']=='Ok' and len(j['matchings']) > 1: # and now more than one match
 			# try without times
+			print '\ttrying again without times, more than one matching'
 			j = map_match(vehicles,False)
 	return j

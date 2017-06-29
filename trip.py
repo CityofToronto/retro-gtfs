@@ -1,15 +1,13 @@
 # documentation on the nextbus feed:
 # http://www.nextbus.com/xmlFeedDocs/NextBusXMLFeed.pdf
 
-import re, db, json
-import map_api
+import re, db, json, map_api, threading, random
 from numpy import mean
-import threading
-import random
 from conf import conf
 from shapely.wkb import loads as loadWKB, dumps as dumpWKB
 from shapely.ops import transform as reproject
 from shapely.geometry import asShape, Point, LineString
+from geom import subset_line
 
 
 print_lock = threading.Lock()
@@ -72,7 +70,6 @@ class trip(object):
 			return db.ignore_trip(self.trip_id,'too short')
 		# check for errors and attempt to correct them
 		while self.has_errors():
-			print self.speed_string
 			# make sure it's still long enough to bother with
 			if len(self.vehicles) < 3:
 				return db.ignore_trip(self.trip_id,'error processing made too short')
@@ -93,8 +90,7 @@ class trip(object):
 		return dumpWKB(LineString(line),hex=True)
 
 	def get_segment_speeds(self):
-		"""return speeds (kmph) on the segments between vehicles
-			non-ignored only and using shapely"""
+		"""return speeds (kmph) on the segments between vehicle records"""
 		# iterate over segments (i-1)
 		dists = []	# km
 		times = []	# hours
@@ -126,68 +122,38 @@ class trip(object):
 		# only handling the first result for now TODO fix that
 		match = result['matchings'][0]
 		self.match_confidence = match['confidence']
+		# report on match quality
+		print '\t',self.match_confidence
 		# store the trip geometry
 		self.match_geom = asShape(match['geometry'])
 		# and be sure to project it correctly...
 		self.match_geom = reproject( conf['projection'], self.match_geom )
-
 		# add geometries for debugging. Remove for faster action
 		db.add_trip_match(
 			self.trip_id,
 			self.match_confidence,
 			json.dumps(match['geometry'])
 		)
-
-		# report on match quality
-		print '\t',self.match_confidence
-
-		# TODO break for testing 
-		return
+		# get the stops as a list of objects
+		# with keys {'id':stop_id,'geom':geom}
+		self.stops = db.get_nearby_stops(self.trip_id)
+		# parse the geometries
+		for stop in self.stops:
+			stop['geom'] = loadWKB(stop['geom'],hex=True)
 
 		# get the times for the waypoints from the vehicle locations
 		# compare to the corresponding points on the matched line 
-		for point,vehicle in zip(tracepoints,self.vehicles):
+		for matchpoint, vehicle in zip(tracepoints,self.vehicles):
 			# these are the matched points of the input cordinates
 			# null entries indicate an omitted outlier
-			# that is why there is a 'try' here. 
-			try:
-				self.waypoints.append({
-					't':vehicle['time'],
-					'm':self.match_geom.project( vehicle['geom'], normalized=True )
-				})
-			except:
+			if matchpoint is not None:
 				pass
-		# See if there is a known direction_id
-		if self.direction_id is None:
-			if self.route_id is None:
-				return db.ignore_trip(self.trip_id,'unknown direction & route IDs')
-			# we must guess the direction ID from the route ID
-			self.direction_id = self.get_best_direction_id()
-		# get the stops as a list of objects
-		# with keys {'id':stop_id,'g':geom}
-		self.stops = db.get_stops(self.direction_id)
-		# we now have all the waypoints and all the stops and
-		# can begin interpolating times, to be stored alongside the stops.
-		# process the geoms
-		for stop in self.stops:
-			stop['geom'] = loadWKB(stop['geom'],hex=True)
-			stop['geom'] = reproject( conf['projection'], stop['geom'] )
-		# discard stops that are too far away
-		self.stops = [
-			s for s in self.stops 
-			if self.match_geom.distance(s['geom']) < conf['stop_dist']
-		]
-		for stop in self.stops:
-			# find position on line
-			stop['m'] = self.match_geom.project( 
-				stop['geom'], 
-				normalized=True 
-			)
-			# interpolate a time
-			stop['arrival'] = self.interpolate_time(stop)
-			if not stop['arrival']:
-				print '\t\tproblem with time??' 
-				continue
+		
+		print subset_line(self.match_geom,10,50)
+
+		# TODO break for testing 
+		raise SystemExit
+
 		# sort stops by arrival time
 		self.stops = sorted(self.stops,key=lambda k: k['arrival'])
 		# there is more than one stop, right?
@@ -196,33 +162,6 @@ class trip(object):
 		else:
 			db.ignore_trip(self.trip_id,'fewer than two stop times estimated')
 		return
-
-
-#	def get_best_direction_id(self):
-#		"""we have a route, but no direction. We need to guess a 
-#			direction based on the route &c."""
-#		dids = db.get_route_directions(self.route_id)
-#		# now determine which did is the best match
-#		best_dist = float('inf')
-#		best_did = None
-#		for did in dids:
-#			stops = db.get_stops(did)
-#			# stops as shapely points
-#			first_stop = reproject(
-#				conf['projection'],
-#				loadWKB(stops[0]['geom'],hex=True)
-#			)
-#			last_stop = reproject(
-#				conf['projection'],
-#				loadWKB(stops[-1]['geom'],hex=True)
-#			)
-#			first_point = Point(self.match_geom.coords[0])
-#			last_point = Point(self.match_geom.coords[-1])
-#			dist = first_stop.distance(first_point) + last_stop.distance(last_point)
-#			print dist,'distance'
-#			if dist < best_dist:
-#				best_dist, best_did = dist, did
-#		return best_did
 
 	def flag(self,problem_description):
 		"""record that something undesireable has occured"""
@@ -235,15 +174,16 @@ class trip(object):
 			for fixeable patterns."""
 		# convert the speeds into a string
 		self.speed_string = ''.join([ 
-			'x' if segSpeed > 120.0 else 'o' if segSpeed < 1.0 else '-'
+			'x' if segSpeed > 80.0 else 'o' if segSpeed < 3.0 else '-'
 			for segSpeed in self.segment_speeds ])
-		# do RegEx search for 'x' or 'oo'
+		# do RegEx search for 'xx' or 'oo'
 		match_oo = re.search('oo',self.speed_string)
-		match_x = re.search('x',self.speed_string)
+		match_x = re.search('xx',self.speed_string)
 		if match_oo or match_x:
 			return True
 		else:
 			return False
+
 
 	def fix_error(self):
 		"""remove redundant points and fix obvious positional 
@@ -270,26 +210,28 @@ class trip(object):
 			self.vehicles.pop( len(self.speed_string) )
 			return
 		# check for two or more o's in the middle and take from after the first o
-		m = re.search('.ooo*.',self.speed_string)
-		if m:
-			# remove the vehicle after the first o. This matches like '-oo-'
-			# so we need to add 2 to the start position to remove the vehicle 
-			# report from between the o's ('-o|o-')
-			self.vehicles.pop( m.span()[0]+1 )
+		match = re.search('ooo*',self.speed_string)
+		if match:
+			# remove all vehicles between the first and last o's
+			v1index = match.span()[0]+1
+			v2index = match.span()[1]
+			# this has to be reversed because the indices reorder 
+			for Vindex in reversed(range(v1index,v2index)):
+				self.vehicles.pop(Vindex)
 			return
 		# 'xx' in the middle, delete the point after the first x
 		m = re.search('.xxx*',self.speed_string)
 		if m:
 			# same strategy as above
-			self.vehicles.pop( m.span()[0]+1 )
+			self.vehicles.pop( m.span()[0]+2 )
 			return
-		# lone middle x
-		m = re.search('.x.',self.speed_string)
-		if m:
-			# delete a point either before or after a lone x
-			i = m.span()[0]+1+random.randint(0,1)
-			self.vehicles.pop( i-1 )
-			return
+#		# lone middle x
+#		m = re.search('.x.',self.speed_string)
+#		if m:
+#			# delete a point either before or after a lone x
+#			i = m.span()[0]+1+random.randint(0,1)
+#			self.vehicles.pop( i-1 )
+#			return
 
 
 	def interpolate_time(self,stop):

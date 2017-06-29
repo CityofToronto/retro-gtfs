@@ -196,6 +196,36 @@ def get_stops(direction_id):
 	return stops
 
 
+def get_nearby_stops(trip_id):
+	"""return stops within 30m of a trip's match geometry
+		including ID and local geometry"""
+	c = cursor()
+	c.execute(
+		"""
+			SELECT 
+				stop_id,
+				ST_Transform(the_geom::geometry,%(EPSG)s) AS geom
+			FROM {stops}
+			WHERE 
+				ST_DWithin(
+					the_geom,
+					(
+						SELECT ST_Transform(match_geom,4326)::geography 
+						FROM {trips}
+						WHERE trip_id = %(trip_id)s),
+					30 -- meters distant
+				)
+		""".format(**conf['db']['tables']),
+		{
+			'trip_id':trip_id,
+			'EPSG':conf['localEPSG']
+		}
+	)
+	stops = []
+	for (stop_id,geom) in c.fetchall():
+		stops.append({'id':stop_id,'geom':geom})
+	return stops
+
 def set_trip_orig_geom(trip_id,localWKBgeom):
 	"""simply take the vehicle records for this trip 
 		and store them as a line geometry with the trip 
@@ -487,6 +517,8 @@ def get_route_directions(route_id):
 		{'route_id':route_id}
 	)
 	# return a list of direction IDs
+
+
 	return [ did for (did,) in c.fetchall() ]
 
 
