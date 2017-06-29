@@ -1,13 +1,13 @@
 # documentation on the nextbus feed:
 # http://www.nextbus.com/xmlFeedDocs/NextBusXMLFeed.pdf
 
-import re, db, json, map_api, threading, random
+import re, db, json, map_api, threading, random, math
 from numpy import mean
 from conf import conf
 from shapely.wkb import loads as loadWKB, dumps as dumpWKB
 from shapely.ops import transform as reproject
 from shapely.geometry import asShape, Point, LineString
-from geom import subset_line
+from geom import cut
 
 
 print_lock = threading.Lock()
@@ -27,17 +27,17 @@ class trip(object):
 		self.vehicle_id = vehicle_id		# int
 		self.last_seen = last_seen			# last vehicle report (epoch time)
 		# initialize sequence
-		self.seq = 1							# sequence which increments at each report
+		self.seq = 1					# sequence which increments at each report
 		# declare several vars for later in the matching process
-		self.speed_string = ""				# str
-		self.match_confidence = -1			# 0 - 1 real
-		self.stops = []						# not set until process()
-		self.segment_speeds = []			# reported speeds of all segments
-		self.waypoints = []					# points on the finallized trip only
-		self.length = 0						# length in meters of current string
-		self.vehicles = []					# ordered vehicle records
-		self.problems = []					# running list of issues
-		self.match_geom = None				# map-matched linestring 
+		self.speed_string = ""		# str
+		self.match_confidence = -1	# 0 - 1 real
+		self.nearby_stops = []		# all stops close to the match geometry
+		self.stops = []				# all stops with arrivals
+		self.segment_speeds = []	# reported speeds of all segments
+		self.length = 0				# length in meters of current string
+		self.vehicles = []			# ordered vehicle records
+		self.problems = []			# running list of issues
+		self.match_geom = None		# map-matched linestring 
 
 	@classmethod
 	def new(clss,trip_id,block_id,direction_id,route_id,vehicle_id,last_seen):
@@ -110,15 +110,14 @@ class trip(object):
 	def match(self):
 		"""Match the trip to the road network, and do all the
 			things that follow therefrom."""
-		result = map_api.map_match(self.vehicles)
+		# don't use times for now TODO use them
+		result = map_api.map_match(self.vehicles,False)
 		# flag results with multiple matches for now until you can 
 		# figure out exactly what is going wrong
 		if result['code'] != 'Ok':
 			return self.flag('match problem, code not "Ok"')
 		if len(result['matchings']) > 1:
 			return self.flag('more than one match segment')
-		# get the matched points
-		tracepoints = result['tracepoints']
 		# only handling the first result for now TODO fix that
 		match = result['matchings'][0]
 		self.match_confidence = match['confidence']
@@ -136,32 +135,79 @@ class trip(object):
 		)
 		# get the stops as a list of objects
 		# with keys {'id':stop_id,'geom':geom}
-		self.stops = db.get_nearby_stops(self.trip_id)
+		self.nearby_stops = db.get_nearby_stops(self.trip_id)
 		# parse the geometries
-		for stop in self.stops:
+		for stop in self.nearby_stops:
 			stop['geom'] = loadWKB(stop['geom'],hex=True)
-
-		# get the times for the waypoints from the vehicle locations
-		# compare to the corresponding points on the matched line 
-		for matchpoint, vehicle in zip(tracepoints,self.vehicles):
+		# use the OSRM tracepoints to drop vehicles that did 
+		# not contribute to the match 
+		tracepoints = result['tracepoints']
+		for i in reversed( range( 0, len(self.vehicles) ) ):
 			# these are the matched points of the input cordinates
 			# null entries indicate an omitted outlier
-			if matchpoint is not None:
-				pass
-		
-		print subset_line(self.match_geom,10,50)
+			if tracepoints[i] is None:
+				del self.vehicles[i]
+		# we should now have one more vehicle record than we have 
+		# legs to the match result. Use these to assign intervehicle 
+		# distances to the vehicle records
+		for i in range(0,len(self.vehicles)):
+			if i == 0:
+				self.vehicles[i]['dist_from_last'] = 0
+				self.vehicles[i]['cum_dist'] = 0
+			else:
+				self.vehicles[i]['dist_from_last'] = match['legs'][i-1]['distance']
+				self.vehicles[i]['cum_dist'] = self.vehicles[i-1]['cum_dist'] + match['legs'][i-1]['distance']
+		# now match stops to the trip geometry
+		# iterate over 500m sections of the match geometry
+		path = self.match_geom
+		traversed = 0
+		# while there is more than 500m of path remaining
+		while path.length > 500:
+			subpath, path = cut(path,500)
+			# check for nearby stops
+			for stop in self.nearby_stops:
+				stop_dist = subpath.distance(stop['geom'])
+				if stop_dist <= 30:
+					# the stop is close to the line!
+					# find the measure along the total path
+					stop_m = traversed + subpath.project(stop['geom'])
+					self.add_stop(stop,stop_m,stop_dist)
+			# note that we have traversed an additional 500m
+			traversed += 500
 
-		# TODO break for testing 
-		raise SystemExit
+		#TODO testing beyond here. Warning! Tigers! Dragons!
+		for stop in self.stops:
+			# interpolate a time
+			stop['arrival'] = self.interpolate_time(stop)
 
-		# sort stops by arrival time
-		self.stops = sorted(self.stops,key=lambda k: k['arrival'])
 		# there is more than one stop, right?
 		if len(self.stops) > 1:
 			db.finish_trip(self)
 		else:
 			db.ignore_trip(self.trip_id,'fewer than two stop times estimated')
 		return
+
+	def add_stop(self,new_stop,new_measure,new_distance):
+		"""add a stop observation or update an existing one"""
+		# we are looking to avoid adding the same stop twice
+		for stop in self.stops:
+			# same stop id and close to the same position?
+			if stop['id']==new_stop['id'] and abs(stop['measure']-new_measure) < 50:
+				# keep the one that is closer
+				if stop['dist'] <= new_distance:
+					# the stop we already have is closer
+					return
+				else:	
+					# the new stop is closer
+					stop['measure'] = new_measure
+					stop['dist'] = new_distance
+					return
+		# we don't have anything like this stop yet, so add it
+		self.stops.append({
+			'id':new_stop['id'],
+			'measure':new_measure,
+			'dist':new_distance
+		})
 
 	def flag(self,problem_description):
 		"""record that something undesireable has occured"""
@@ -235,25 +281,26 @@ class trip(object):
 
 
 	def interpolate_time(self,stop):
-		"""get the time for a stop which is ordered by doing an interpolation
-			on the trip times and locations. We already know the m of the stop
-			and of the points on the trip/track"""
+		"""get the time for a stop by doing an interpolation between 
+			vehicle locations. We already know the m of the stop
+			and of the vehicles on the trip/track"""
 		# iterate over the segments of the trip, looking for the segment
 		# which holds the stop of interest
 		first = True
-		for point in self.waypoints:
+		for v in self.vehicles:
 			if first:
+				m1 = v['cum_dist'] # zero
+				t1 = v['time'] # time
 				first = False
-				m1 = point['m'] # zero
-				t1 = point['t'] # time
 				continue
-			m2 = point['m']
-			t2 = point['t']
-			if m1 <= stop['m'] <= m2:	# intersection is at or between these points
+			m2 = v['cum_dist']
+			t2 = v['time']
+			# if intersection is at or between these points
+			if m1 <= stop['measure'] <= m2:
 				# interpolate the time
-				if stop['m'] == m1:
+				if stop['measure'] == m1:
 					return t1
-				percent_of_segment = (stop['m'] - m1) / (m2 - m1)
+				percent_of_segment = (stop['measure'] - m1) / (m2 - m1)
 				additional_time = percent_of_segment * (t2 - t1) 
 				return t1 + additional_time
 			# create the segment for the next iteration
@@ -263,10 +310,10 @@ class trip(object):
 		# between any waypoints. This is probably a precision issue and the 
 		# stop should be right off one of the ends. Add 20 seconds as a 
 		# guestimate for extra time
-		if stop['m'] == 0:
-			return self.waypoints[0]['t'] - 20
-		elif stop['m'] == 1:
-			return self.waypoints[-1]['t'] + 20
+		if stop['measure'] == 0:
+			return self.vehicles[0]['time'] - 20
+		elif stop['measure'] == 1:
+			return self.vehicles[-1]['time'] + 20
 		else:
 			print '\t\tstop thing failed??'
 		return None
