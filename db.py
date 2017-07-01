@@ -199,21 +199,20 @@ def get_stops(direction_id):
 
 def get_nearby_stops(trip_id):
 	"""return stops within 30m of a trip's match geometry
-		including ID and local geometry"""
-	from time import time
-	start = time()
+		including ID and local geometry
+		Benchmark: this takes ~ 0.10 sec for a big messy linestring"""
 	c = cursor()
 	c.execute(
 		"""
 			SELECT 
 				stop_id,
 				loc_geom
-			FROM gtfs_2017_stops
+			FROM {stops}
 			WHERE 
 				near_rio AND 
 				ST_Contains(
 					(
-						SELECT ST_Buffer(match_geom,30) 
+						SELECT ST_Buffer(ST_Simplify(match_geom,2),35) 
 						FROM rio2017_trips 
 						WHERE trip_id = %(trip_id)s 
 					),
@@ -225,7 +224,6 @@ def get_nearby_stops(trip_id):
 	stops = []
 	for (stop_id,geom) in c.fetchall():
 		stops.append({'id':stop_id,'geom':geom})
-	print 'stop finding took',time() - start
 	return stops
 
 def set_trip_orig_geom(trip_id,localWKBgeom):

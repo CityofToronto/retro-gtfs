@@ -39,12 +39,6 @@ def map_match(vehicles,include_times=True):
 	)
 	# parse the result
 	j = json.loads(response.text)
-	# TODO temp for debugging
-	# write the response for inspection
-	outfile = open('match.out.json','w')
-	outfile.write(response.text)
-	outfile.close()
-	# TODO end debugging. all above can be deleted
 	# see if there is more than one match. If there is, try again 
 	# without times. Avoid infinite recursion
 	if include_times: # was first try
