@@ -1,8 +1,6 @@
 # functions involving BD interaction
-import psycopg2		# DB interaction
-import json
+import psycopg2, json
 from conf import conf
-import random
 
 # connect and establish a cursor, based on parameters in conf.py
 conn_string = (
@@ -11,23 +9,19 @@ conn_string = (
 	+"' user='"+conf['db']['user']
 	+"' password='"+conf['db']['password']+"'"
 )
-connection_1 = psycopg2.connect(conn_string)
-connection_2 = psycopg2.connect(conn_string)
-connection_3 = psycopg2.connect(conn_string)
-connection_1.autocommit = True
-connection_2.autocommit = True
-connection_3.autocommit = True
+connection = psycopg2.connect(conn_string)
+connection.autocommit = True
+
+def reconnect():
+	"""renew connections inside a process"""
+	global connection
+	connection = psycopg2.connect(conn_string)
+	connection.autocommit = True
 
 def cursor():
 	"""provide a cursor randomly from one of the 
 		available connections"""
-	c = random.randint(1,3)
-	if c == 1:
-		return connection_1.cursor()
-	elif c == 2:
-		return connection_2.cursor()
-	else:
-		return connection_3.cursor()
+	return connection.cursor()
 
 def new_trip_id():
 	"""get a next trip_id to start from, defaulting to 1"""
@@ -71,28 +65,6 @@ def copy_vehicles(filename):
 	""",(filename,))
 
 
-
-#def trip_length(trip_id):
-#	"""return the length of the trip in KM"""
-#	c = cursor()
-#	c.execute(
-#		"""
-#			SELECT 
-#				ST_Length(ST_MakeLine(location ORDER BY seq)) / 1000
-#			FROM {vehicles} 
-#			WHERE trip_id = %(trip_id)s AND NOT ignore
-#			GROUP BY trip_id;
-#		""".format(**conf['db']['tables']),
-#		{'trip_id':trip_id}
-#	)
-#	if c.rowcount == 1:
-#		(km,) = c.fetchone()
-#		return km
-#	else: 
-#		print 'trip_length() error'
-#		return 0
-
-
 def delete_trip(trip_id,reason=None):
 	"""mask for ignore_trip"""
 	ignore_trip(trip_id,reason)
@@ -129,7 +101,7 @@ def flag_trip(trip_id,problem_description_string):
 
 
 
-def add_trip_match(trip_id,confidence,geometry_match):
+def add_trip_match(trip_id,confidence,geometry_match_wkb):
 	"""update the trip record with it's matched geometry"""
 	c = cursor()
 	# store the given values
@@ -138,12 +110,12 @@ def add_trip_match(trip_id,confidence,geometry_match):
 			UPDATE {trips}
 			SET  
 				match_confidence = %(confidence)s,
-				match_geom = ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON(%(match_geom)s),4326),32723)
+				match_geom = ST_SetSRID(%(match_geom)s::geometry,32723)
 			WHERE trip_id  = %(trip_id)s;
 		""".format(**conf['db']['tables']),
 		{
 			'confidence':confidence, 
-			'match_geom':geometry_match, 
+			'match_geom':geometry_match_wkb, 
 			'trip_id':trip_id
 		}
 	)
@@ -212,7 +184,7 @@ def get_nearby_stops(trip_id):
 				near_rio AND 
 				ST_Contains(
 					(
-						SELECT ST_Buffer(ST_Simplify(match_geom,2),35) 
+						SELECT ST_Buffer(ST_Simplify(match_geom,1),30) 
 						FROM rio2017_trips 
 						WHERE trip_id = %(trip_id)s 
 					),

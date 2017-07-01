@@ -1,7 +1,7 @@
 # documentation on the nextbus feed:
 # http://www.nextbus.com/xmlFeedDocs/NextBusXMLFeed.pdf
 
-import re, db, json, map_api, threading, random, math
+import re, db, json, map_api, random, math
 from numpy import mean
 from conf import conf
 from shapely.wkb import loads as loadWKB, dumps as dumpWKB
@@ -10,9 +10,7 @@ from shapely.geometry import asShape, Point, LineString
 from geom import cut
 
 
-print_lock = threading.Lock()
-
-class trip(object):
+class Trip(object):
 	"""The trip class provides all the methods needed for dealing
 		with one observed trip/track. Classmethods provide two 
 		different ways of instantiating."""
@@ -127,11 +125,13 @@ class trip(object):
 		self.match_geom = asShape(match['geometry'])
 		# and be sure to project it correctly...
 		self.match_geom = reproject( conf['projection'], self.match_geom )
+		# simplify slightly for speed
+		self.match_geom = self.match_geom.simplify(1)
 		# add geometries for debugging. Remove for faster action
 		db.add_trip_match(
 			self.trip_id,
 			self.match_confidence,
-			json.dumps(match['geometry'])
+			dumpWKB(self.match_geom,hex=True)
 		)
 		# get the stops as a list of objects
 		# with keys {'id':stop_id,'geom':geom}
