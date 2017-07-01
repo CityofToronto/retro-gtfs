@@ -179,6 +179,8 @@ class trip(object):
 		for stop in self.stops:
 			# interpolate a time
 			stop['arrival'] = self.interpolate_time(stop)
+		# ensure that the stops are ordered
+		self.stops = sorted(self.stops, key=lambda k: k['arrival']) 
 
 		# there is more than one stop, right?
 		if len(self.stops) > 1:

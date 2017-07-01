@@ -53,7 +53,19 @@ UPDATE rio2017_trips SET azimuth = ST_Azimuth(
 	ST_EndPoint(orig_geom)
 );
 
-CLUSTER rio2017_trips USING rio2017_trips_idx;
+/*
+Update trip_ids for vehicles
+...this part takes the longest probably
+*/
+
+UPDATE rio2017_vehicles SET trip_id = the_trip_id 
+FROM (
+	SELECT 
+		trip_id AS the_trip_id, 
+		unnest(vehicle_uids) AS vuid
+	FROM rio2017_trips
+) AS sub
+WHERE vuid = uid;
 
 /*
 Create the other necessary tables, some from an imported GTFS dataset
@@ -118,17 +130,4 @@ WITH shapes AS (
 	GROUP BY shape_id
 ) UPDATE rio2017_directions SET shape = line
 FROM shapes WHERE shapes.shape_id = rio2017_directions.shape_id
-	
-/*
-Update trip_ids for vehicles
-...this part takes the longest probably
-*/
 
-UPDATE rio2017_vehicles SET trip_id = the_trip_id 
-FROM (
-	SELECT 
-		trip_id AS the_trip_id, 
-		unnest(vehicle_uids) AS vuid
-	FROM rio2017_trips
-) AS sub
-WHERE vuid = uid;

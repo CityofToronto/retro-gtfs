@@ -169,6 +169,7 @@ def get_stops(direction_id):
 		and their attributes for the direction, returning 
 		as a dictionary"""
 	# TODO is this actually ordered? Does it need to be?
+	# TODO is the geometry still the correct projection?
 	c = cursor()
 	c.execute(
 		"""
@@ -181,8 +182,8 @@ def get_stops(direction_id):
 			)
 			SELECT 
 				stop_id,
-				the_geom
-			FROM {stops}
+				the_geom [this will break here because you need to check the geom field for projection] 
+			FROM {stops} 
 			WHERE stop_id IN (SELECT stop_id FROM sub);
 		""".format(**conf['db']['tables']),
 		{'direction_id':direction_id}
@@ -199,31 +200,32 @@ def get_stops(direction_id):
 def get_nearby_stops(trip_id):
 	"""return stops within 30m of a trip's match geometry
 		including ID and local geometry"""
+	from time import time
+	start = time()
 	c = cursor()
 	c.execute(
 		"""
 			SELECT 
 				stop_id,
-				ST_Transform(the_geom::geometry,%(EPSG)s) AS geom
-			FROM {stops}
+				loc_geom
+			FROM gtfs_2017_stops
 			WHERE 
-				ST_DWithin(
-					the_geom,
+				near_rio AND 
+				ST_Contains(
 					(
-						SELECT ST_Transform(match_geom,4326)::geography 
-						FROM {trips}
-						WHERE trip_id = %(trip_id)s),
-					30 -- meters distant
+						SELECT ST_Buffer(match_geom,30) 
+						FROM rio2017_trips 
+						WHERE trip_id = %(trip_id)s 
+					),
+					loc_geom
 				)
 		""".format(**conf['db']['tables']),
-		{
-			'trip_id':trip_id,
-			'EPSG':conf['localEPSG']
-		}
+		{ 'trip_id':trip_id }
 	)
 	stops = []
 	for (stop_id,geom) in c.fetchall():
 		stops.append({'id':stop_id,'geom':geom})
+	print 'stop finding took',time() - start
 	return stops
 
 def set_trip_orig_geom(trip_id,localWKBgeom):
