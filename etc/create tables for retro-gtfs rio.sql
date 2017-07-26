@@ -1,7 +1,53 @@
 ﻿/*
-create the trips table from python output and  
-generate geometries with azimuth for visualization
+create the blocks table from python output
 */
+
+-- read in the results from Python
+DROP TABLE IF EXISTS rio2014_blocks;
+CREATE TABLE rio2014_blocks (
+	-- to be populated from csv vv
+	block_id integer PRIMARY KEY,
+	vehicle_id varchar,
+	route_id varchar,
+	vehicle_uids integer[],
+	block_break_reasons text[],
+	-- to be populated from csv ^^
+	-- comes later vv
+	orig_geom geometry(LINESTRING,32723),	-- geometry of all vehicle points
+	-- for manual cleaning vv
+	ignore boolean DEFAULT FALSE, -- ignore this block during processing?
+	breakzones geometry(GEOMETRYCOLLECTION,32723), -- manually identified trip end zones
+	is_trip boolean DEFAULT FALSE, -- manually identifed, no splitting necessary
+	km real -- length of geometry 
+);
+COPY rio2014_blocks (block_break_reasons, block_id, vehicle_id, route_id, vehicle_uids) 
+FROM '/home/nate/rio/2014blocks.csv' CSV HEADER;
+
+CREATE INDEX ON rio2014_blocks (km);
+CREATE INDEX ON rio2014_blocks (ignore);
+CREATE INDEX ON rio2014_blocks USING GIST (breakzones);
+
+-- populate geometry column with one big join/update
+WITH geoms AS (
+	SELECT 
+		b.block_id,
+		ST_Transform(ST_MakeLine(v.geom ORDER BY datahora ASC),32723) AS geom
+	FROM rio2014_blocks AS b JOIN rio2014_vehicles AS v
+		ON v.uid = ANY (b.vehicle_uids)
+	WHERE b.orig_geom IS NULL
+	GROUP BY b.block_id
+)
+UPDATE rio2014_blocks SET orig_geom = geoms.geom 
+FROM geoms WHERE rio2014_blocks.block_id = geoms.block_id;
+
+UPDATE rio2014_blocks SET km = ST_Length(orig_geom)/1000
+WHERE km IS NULL AND orig_geom IS NOT NULL;
+
+
+
+
+
+
 
 -- read in the results from Python
 DROP TABLE IF EXISTS rio2017_trips;
@@ -23,9 +69,7 @@ CREATE TABLE rio2017_trips (
 	problem varchar DEFAULT '',	-- description of any problems that arise
 	ignore boolean DEFAULT FALSE,	-- ignore this vehicle during processing?
 	azimuth real, 			-- azimuth for pretty rendering
-	trip_break_reasons text[],
-	block_break_reasons text[]
-
+	trip_break_reasons text[]
 );
 COPY rio2017_trips (trip_break_reasons, block_break_reasons, trip_id, block_id, vehicle_id, route_id, vehicle_uids) 
 FROM '/home/nate/rio/2017trips.csv' CSV HEADER;
@@ -57,7 +101,7 @@ UPDATE rio2017_trips SET azimuth = ST_Azimuth(
 Update trip_ids for vehicles
 ...this part takes the longest probably
 */
-
+UPDATE rio2017_vehicles SET trip_id = NULL;
 UPDATE rio2017_vehicles SET trip_id = the_trip_id 
 FROM (
 	SELECT 

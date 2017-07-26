@@ -121,6 +121,55 @@ def add_trip_match(trip_id,confidence,geometry_match_wkb):
 	)
 
 
+def get_trip_geom(trip_id,geom_type='match'):
+	"""returns a trip's geometry ('matched', 'clean', or 'orig') 
+		in local coordinates if any exists. This function is 
+		really only for testing the rio data"""
+	c = cursor()
+	if geom_type == 'match':
+		c.execute(
+			"""
+				SELECT match_geom
+				FROM {trips}
+				WHERE 
+					trip_id  = %(trip_id)s
+					AND match_geom IS NOT NULL;
+			""".format(**conf['db']['tables']),
+			{ 'trip_id':trip_id }
+		)
+		if c.statusmessage == 'SELECT 1':
+			(geom,) = c.fetchone()
+			return geom
+	elif geom_type == 'orig':
+		c.execute(
+			"""
+				SELECT orig_geom
+				FROM {trips}
+				WHERE 
+					trip_id  = %(trip_id)s
+					AND orig_geom IS NOT NULL;
+			""".format(**conf['db']['tables']),
+			{ 'trip_id':trip_id }
+		)
+		if c.statusmessage == 'SELECT 1':
+			(geom,) = c.fetchone()
+			return geom
+	elif geom_type == 'clean':
+		c.execute(
+			"""
+				SELECT clean_geom
+				FROM {trips}
+				WHERE 
+					trip_id  = %(trip_id)s
+					AND clean_geom IS NOT NULL;
+			""".format(**conf['db']['tables']),
+			{ 'trip_id':trip_id }
+		)
+		if c.statusmessage == 'SELECT 1':
+			(geom,) = c.fetchone()
+			return geom
+
+
 def insert_trip(tid,bid,rid,did,vid):
 	"""store the trip in the database"""
 	c = cursor()
