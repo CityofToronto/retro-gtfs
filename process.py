@@ -5,45 +5,45 @@
 import multiprocessing as mp
 import db
 from time import sleep
-from trip import Trip
+from block import Block
 
 # let mode be one of ('single','range?')
 mode = raw_input('Processing mode (single or range) --> ')
 
-def process_trip(valid_trip_id):
+def process_block(valid_block_id):
 	"""worker process called when using multiprocessing"""
-	print 'starting trip:',valid_trip_id
+	print 'starting block:',valid_block_id
 	db.reconnect()
-	trip = Trip.fromDB(valid_trip_id)
-	trip.process()
+	block = Block.fromDB(valid_block_id)
+	block.process()
 
 # single mode enters one trip at a time and stops when 
 # a non-integer is entered
 if mode == 'single':
-	trip_id = raw_input('trip_id to process --> ')
-	while trip_id.isdigit():
-		if db.trip_exists(trip_id):
-			# create a trip object
-			this_trip = Trip.fromDB(trip_id)
+	block_id = raw_input('block_id to process --> ')
+	while block_id.isdigit():
+		if db.block_exists(block_id):
+			# create a trip object for the block
+			this_block = Block.fromDB(block_id)
 			# process
-			this_trip.process()
+			this_block.process()
 		else:
-			print 'no such trip'
-		# ask for another trip and continue
-		trip_id = raw_input('trip_id to process --> ')
+			print 'no such block'
+		# ask for another block and continue
+		block_id = raw_input('block_id to process --> ')
 
 # 'range' mode does all valid ids in the given range
 elif mode == 'range':
-	id_range = raw_input('trip_id range as start:end --> ')
+	id_range = raw_input('block_id range as start:end --> ')
 	id_range = id_range.split(':')
-	# get a list of trip id's in the range
-	trip_ids = db.get_trip_ids(id_range[0],id_range[1])
-	print len(trip_ids),'trips in that range'
+	# get a list of block id's in the range
+	block_ids = db.get_block_ids(id_range[0],id_range[1])
+	print len(block_ids),'blocks in that range'
 	# how many parallel processes to use?
 	max_procs = int(raw_input('max processes --> '))
 	# create a pool of workers and pass them the data
 	p = mp.Pool(max_procs)
-	p.map(process_trip,trip_ids)
+	p.map(process_block,block_ids)
 	print 'COMPLETED!'
 
 else:

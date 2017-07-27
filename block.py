@@ -10,22 +10,18 @@ from shapely.geometry import asShape, Point, LineString
 from geom import cut
 
 
-class Trip(object):
-	"""The trip class provides all the methods needed for dealing
-		with one observed trip/track. Classmethods provide two 
+class Block(object):
+	"""The block class provides all the methods needed for dealing
+		with one observed block/track. Classmethods provide two 
 		different ways of instantiating."""
 
-	def __init__(self,trip_id,block_id,direction_id,route_id,vehicle_id,last_seen):
+	def __init__(self,block_id,route_id,vehicle_id,last_seen):
 		"""initialization method, only accessed by the @classmethod's below"""
 		# set initial attributes
-		self.trip_id = trip_id				# int
 		self.block_id = block_id			# int
-		self.direction_id = direction_id	# str
 		self.route_id = route_id			# int
 		self.vehicle_id = vehicle_id		# int
 		self.last_seen = last_seen			# last vehicle report (epoch time)
-		# initialize sequence
-		self.seq = 1					# sequence which increments at each report
 		# declare several vars for later in the matching process
 		self.speed_string = ""		# str
 		self.match_confidence = -1	# 0 - 1 real
@@ -36,47 +32,42 @@ class Trip(object):
 		self.vehicles = []			# ordered vehicle records
 		self.problems = []			# running list of issues
 		self.match_geom = None		# map-matched linestring 
+		# new stuff
+		self.trips = []				# 
 
 	@classmethod
-	def new(clss,trip_id,block_id,direction_id,route_id,vehicle_id,last_seen):
-		"""create wholly new trip object, providing all paremeters"""
-		# store instance in the DB
-		db.insert_trip( trip_id, block_id, route_id, direction_id, vehicle_id )
-		return clss(trip_id,block_id,direction_id,route_id,vehicle_id,last_seen)
-
-	@classmethod
-	def fromDB(clss,trip_id):
-		"""construct a trip object from an existing record in the database"""
-		(bid,did,rid,vid) = db.get_trip(trip_id)
-		return clss(trip_id,bid,did,rid,vid,last_seen=None)
+	def fromDB(clss,block_id):
+		"""construct a block object from an existing record in the database"""
+		(rid,vid) = db.get_block(block_id)
+		return clss(block_id,rid,vid,last_seen=None)
 
 	def process(self):
-		"""A trip has just ended. What do we do with it?"""
-		db.scrub_trip(self.trip_id)
+		"""A block has just ended. What do we do with it?"""
+		db.scrub_block(self.block_id)
 		# get vehicle records and make geometry objects
-		self.vehicles = db.get_vehicles(self.trip_id)
+		self.vehicles = db.get_vehicles(self.block_id)
 		for v in self.vehicles:
 			v['geom'] = loadWKB(v['geom'],hex=True)
 			v['ignore'] = False
 		# update the pre-cleaning geometry
 		# TODO remove for speed
-		db.set_trip_orig_geom(self.trip_id,self.get_geom())
+		db.set_block_orig_geom(self.block_id,self.get_geom())
 		# calculate vector of segment speeds
 		self.segment_speeds = self.get_segment_speeds()
-		# check for very short trips
+		# check for very short blocks
 		if self.length < 0.8: # km
-			return db.ignore_trip(self.trip_id,'too short')
+			return db.ignore_block(self.block_id,'too short')
 		# check for errors and attempt to correct them
 		while self.has_errors():
 			# make sure it's still long enough to bother with
 			if len(self.vehicles) < 3:
-				return db.ignore_trip(self.trip_id,'error processing made too short')
+				return db.ignore_block(self.block_id,'error processing made too short')
 			# still long enough to try fixing
 			self.fix_error()
 			# update the segment speeds for the next iteration
 			self.segment_speeds = self.get_segment_speeds()
-		# trip is clean, so store the cleaned line and begin matching
-		db.set_trip_clean_geom(self.trip_id,self.get_geom())
+		# block is clean, so store the cleaned line and begin matching
+		db.set_block_clean_geom(self.block_id,self.get_geom())
 		self.match()
 
 	def get_geom(self):
@@ -106,7 +97,7 @@ class Trip(object):
 
 
 	def match(self):
-		"""Match the trip to the road network, and do all the
+		"""Match the block to the road network, and do all the
 			things that follow therefrom."""
 		# don't use times for now TODO use them
 		result = map_api.map_match(self.vehicles,False)
@@ -128,14 +119,14 @@ class Trip(object):
 		# simplify slightly for speed
 		self.match_geom = self.match_geom.simplify(1)
 		# add geometries for debugging. Remove for faster action
-		db.add_trip_match(
-			self.trip_id,
+		db.add_block_match(
+			self.block_id,
 			self.match_confidence,
 			dumpWKB(self.match_geom,hex=True)
 		)
 		# get the stops as a list of objects
 		# with keys {'id':stop_id,'geom':geom}
-		self.nearby_stops = db.get_nearby_stops(self.trip_id)
+		self.nearby_stops = db.get_nearby_stops(self.block_id)
 		# parse the geometries
 		for stop in self.nearby_stops:
 			stop['geom'] = loadWKB(stop['geom'],hex=True)
@@ -157,7 +148,7 @@ class Trip(object):
 			else:
 				self.vehicles[i]['dist_from_last'] = match['legs'][i-1]['distance']
 				self.vehicles[i]['cum_dist'] = self.vehicles[i-1]['cum_dist'] + match['legs'][i-1]['distance']
-		# now match stops to the trip geometry
+		# now match stops to the block geometry
 		# iterate over 750m sections of the match geometry
 		path = self.match_geom
 		traversed = 0
@@ -177,7 +168,7 @@ class Trip(object):
 					self.add_stop(stop,stop_m,stop_dist)
 			# note that we have traversed an additional 500m
 			traversed += 750
-		print 'locating stops took ',time() - start,'for',self.trip_id
+		print 'locating stops took ',time() - start,'for',self.block_id
 		# interpolate stop times
 		for stop in self.stops:
 			# interpolate a time
@@ -186,17 +177,43 @@ class Trip(object):
 		self.stops = sorted(self.stops, key=lambda k: k['arrival']) 
 		# there is more than one stop, right?
 		if len(self.stops) > 1:
-			db.finish_trip(self)
+			# TODO 
+			self.to_trips()
 		else:
-			db.ignore_trip(self.trip_id,'fewer than two stop times estimated')
+			db.ignore_block(self.block_id,'fewer than two stop times estimated')
 		return
 
+	def to_trips(self):
+		"""break the block into distinct trips, setting them in
+			self.trips """
+		# reset the trips list, though it should already be empty
+		self.trips = []
+		# iterate over stops, some of which repeat stop_id's
+		# identify trips as follows:
+		# |-t1|   |-t3| ...
+		# 1 2 3 1 2 3 1 2 3 1 2 3 
+		#     |-t2|   |-t4| ... 
+		trip_stops = []
+		trip_ids   = []
+		for stop in self.stops: 
+			# is this stop_id in this trip yet?
+			sid = stop['id']
+			if sid not in trip_ids:
+				trip_stops.append(stop)
+				trip_ids.append(sid)
+			else: # trip already has this stop
+				self.trips.append(trip_stops)
+				trip_stops = [stop]
+				trip_ids = [sid]
+		db.store_trips(self.block_id,self.route_id,self.trips)
+
+				
 	def add_stop(self,new_stop,new_measure,new_distance):
 		"""add a stop observation or update an existing one"""
 		# we are looking to avoid adding the same stop twice
 		for stop in self.stops:
 			# same stop id and close to the same position?
-			if stop['id']==new_stop['id'] and abs(stop['measure']-new_measure) < 50:
+			if stop['id']==new_stop['id'] and abs(stop['measure']-new_measure) < 60:
 				# keep the one that is closer
 				if stop['dist'] <= new_distance:
 					# the stop we already have is closer

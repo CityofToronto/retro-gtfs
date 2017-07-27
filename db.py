@@ -1,5 +1,5 @@
 # functions involving BD interaction
-import psycopg2, json
+import psycopg2, json, math
 from conf import conf
 
 # connect and establish a cursor, based on parameters in conf.py
@@ -65,58 +65,54 @@ def copy_vehicles(filename):
 	""",(filename,))
 
 
-def delete_trip(trip_id,reason=None):
-	"""mask for ignore_trip"""
-	ignore_trip(trip_id,reason)
-
-def ignore_trip(trip_id,reason=None):
+def ignore_block(block_id,reason=None):
 	"""mark a trip to be ignored"""
 	c = cursor()
 	c.execute(
 		"""
-			UPDATE {trips} SET ignore = TRUE WHERE trip_id = %(trip_id)s;
-			DELETE FROM {stop_times} WHERE trip_id = %(trip_id)s;
+			UPDATE {blocks} SET ignore = TRUE WHERE block_id = %(block_id)s;
+			DELETE FROM {stop_times} WHERE block_id = %(block_id)s;
 		""".format(**conf['db']['tables']),
-		{'trip_id':trip_id} )
+		{'block_id':block_id} )
 	if reason:
-		flag_trip(trip_id,reason)
+		flag_block(block_id,reason)
 	return
 
 
-def flag_trip(trip_id,problem_description_string):
-	"""populate 'problem' field of trip table: something must 
+def flag_block(block_id,problem_description_string):
+	"""populate 'problem' field of block table: something must 
 		have gone wrong"""
 	c = cursor()
 	c.execute(
 		"""
-			UPDATE {trips} 
+			UPDATE {blocks} 
 			SET problem = problem || %(problem)s 
-			WHERE trip_id = %(trip_id)s;
+			WHERE block_id = %(block_id)s;
 		""".format(**conf['db']['tables']),
 		{
 			'problem':problem_description_string,
-			'trip_id':trip_id
+			'block_id':block_id
 		}
 	)
 
 
 
-def add_trip_match(trip_id,confidence,geometry_match_wkb):
-	"""update the trip record with it's matched geometry"""
+def add_block_match(block_id,confidence,geometry_match_wkb):
+	"""update the block record with it's matched geometry"""
 	c = cursor()
 	# store the given values
 	c.execute(
 		"""
-			UPDATE {trips}
+			UPDATE {blocks}
 			SET  
 				match_confidence = %(confidence)s,
 				match_geom = ST_SetSRID(%(match_geom)s::geometry,32723)
-			WHERE trip_id  = %(trip_id)s;
+			WHERE block_id  = %(block_id)s;
 		""".format(**conf['db']['tables']),
 		{
 			'confidence':confidence, 
 			'match_geom':geometry_match_wkb, 
-			'trip_id':trip_id
+			'block_id':block_id
 		}
 	)
 
@@ -218,8 +214,8 @@ def get_stops(direction_id):
 	return stops
 
 
-def get_nearby_stops(trip_id):
-	"""return stops within 30m of a trip's match geometry
+def get_nearby_stops(block_id):
+	"""return stops within 30m of a block's match geometry
 		including ID and local geometry
 		Benchmark: this takes ~ 0.10 sec for a big messy linestring"""
 	c = cursor()
@@ -234,49 +230,47 @@ def get_nearby_stops(trip_id):
 				ST_Contains(
 					(
 						SELECT ST_Buffer(ST_Simplify(match_geom,1),30) 
-						FROM rio2017_trips 
-						WHERE trip_id = %(trip_id)s 
+						FROM {blocks} 
+						WHERE block_id = %(block_id)s 
 					),
 					loc_geom
 				)
 		""".format(**conf['db']['tables']),
-		{ 'trip_id':trip_id }
+		{ 'block_id':block_id }
 	)
 	stops = []
 	for (stop_id,geom) in c.fetchall():
 		stops.append({'id':stop_id,'geom':geom})
 	return stops
 
-def set_trip_orig_geom(trip_id,localWKBgeom):
-	"""simply take the vehicle records for this trip 
-		and store them as a line geometry with the trip 
-		record. ALL initial vehicles go in this line"""
+def set_block_orig_geom(block_id,localWKBgeom):
+	"""ALL initial vehicles go in this line"""
 	c = cursor()
 	c.execute(
 		"""
-			UPDATE {trips} 
+			UPDATE {blocks} 
 			SET orig_geom = ST_SetSRID( %(geom)s::geometry, %(EPSG)s )
-			WHERE trip_id = %(trip_id)s;
+			WHERE block_id = %(block_id)s;
 		""".format(**conf['db']['tables']),
 		{
-			'trip_id':trip_id,
+			'block_id':block_id,
 			'geom':localWKBgeom,
 			'EPSG':conf['localEPSG']
 		}
 	)
 
 
-def set_trip_clean_geom(trip_id,localWKBgeom):
+def set_block_clean_geom(block_id,localWKBgeom):
 	"""Store a geometry of the input to the matching process"""
 	c = cursor()
 	c.execute(
 		"""
-			UPDATE {trips} 
+			UPDATE {blocks} 
 			SET clean_geom = ST_SetSRID( %(geom)s::geometry, %(EPSG)s )
-			WHERE trip_id = %(trip_id)s;
+			WHERE block_id = %(block_id)s;
 		""".format(**conf['db']['tables']),
 		{
-			'trip_id':trip_id,
+			'block_id':block_id,
 			'geom':localWKBgeom,
 			'EPSG':conf['localEPSG']
 		}
@@ -284,29 +278,29 @@ def set_trip_clean_geom(trip_id,localWKBgeom):
 
 
 
-def finish_trip(trip):
+def finish_block(block):
 	"""1. store stop info in stop_times
-		2. determine the service_id and set it in nb_trips.
+		2. determine the service_id and set it per trip.
 		3. set the arrival and departure times based on the day start"""
 	c = cursor()
 	# insert the stops
 	records = []
 	seq = 1
-	for stop in trip.stops:
+	for stop in block.stops:
 		# list of tuples
-		records.append( (trip.trip_id,stop['id'],stop['arrival'],seq) )
+		records.append( (block.block_id,stop['id'],stop['arrival'],seq) )
 		seq += 1
 	args_str = ','.join(c.mogrify("(%s,%s,%s,%s)", x) for x in records)
 	c.execute(
 		"""
 			INSERT INTO {stop_times} 
-				(trip_id, stop_id, etime, stop_sequence) 
+				(block_id, stop_id, etime, stop_sequence) 
 			VALUES 
 		""".format(**conf['db']['tables']) + args_str
 	)
 
 	# get the first start time
-	t = trip.stops[0]['arrival']
+	t = block.stops[0]['arrival']
 	# find the etime of the first moment of the day
 	# first center the day on local time
 	tlocal = t - 4*3600
@@ -316,13 +310,13 @@ def finish_trip(trip):
 	day_start = t - from_dawn
 	c.execute(
 		"""
-			UPDATE {trips} 
+			UPDATE {blocks} 
 			SET service_id = %(service_id)s 
-			WHERE trip_id = %(trip_id)s;
+			WHERE block_id = %(block_id)s;
 		""".format(**conf['db']['tables']),
 		{
 			'service_id':service_id,
-			'trip_id':trip.trip_id
+			'block_id':block.block_id
 		}
 	)
 
@@ -330,15 +324,59 @@ def finish_trip(trip):
 	c.execute(
 		"""
 			UPDATE {stop_times} SET 
-				arrival_time = ROUND(etime - %(day_start)s) * INTERVAL '1 second',
-				departure_time = ROUND(etime - %(day_start)s) * INTERVAL '1 second'
-			WHERE trip_id = %(trip_id)s;
+				arrival_time = ROUND(etime - %(day_start)s) * INTERVAL '1 second'
+			WHERE block_id = %(block_id)s;
 		""".format(**conf['db']['tables']),
 		{
 			'day_start':day_start,
-			'trip_id':trip.trip_id
+			'block_id':block.block_id
 		}
 	)
+
+def store_trips(block_id,route_id,trips):
+	"""store all trip-level and stop level information from the 
+		processing of a block"""	
+	c = cursor()
+	t = 0.1
+	for trip in trips:
+		# make up a unique trip_id by adding a decimal to 
+		# the unique block_id
+		trip_id = int(block_id) + t
+		t += 0.1
+		# the service_id is based on the day of the first stop_time
+		t1 = trip[0]['arrival']
+		service_id = math.floor( t1 / (24*60*60) )
+		# first handle the trip
+		c.execute("""
+				INSERT INTO {trips} ( trip_id, block_id, service_id, route_id )
+				VALUES ( %(trip_id)s, %(block_id)s, %(service_id)s, %(route_id)s );
+			""".format(**conf['db']['tables']),
+			{
+				'trip_id':trip_id,
+				'block_id':block_id,
+				'service_id':service_id,
+				'route_id':route_id
+			}
+		)
+		# then handle the stops
+		seq = 1
+		for stop in trip:	
+			c.execute("""
+					INSERT INTO {stop_times} 
+						( trip_id, block_id, stop_id, etime, stop_sequence )
+					VALUES 
+						( %(trip_id)s, %(block_id)s, %(stop_id)s, %(etime)s, %(seq)s );
+				""".format(**conf['db']['tables']),
+				{
+					'trip_id':trip_id,
+					'block_id':block_id,
+					'stop_id':stop['id'],
+					'etime':stop['arrival'],
+					'seq':seq
+				}
+			)
+			seq += 1
+
 
 
 def try_storing_stop(stop_id,stop_name,stop_code,lon,lat):
@@ -421,26 +459,28 @@ def try_storing_direction(route_id,did,title,name,branch,useforui,stops):
 		)
 
 
-def scrub_trip(trip_id):
+def scrub_block(block_id):
 	"""Un-mark any flag fields and leave the DB record 
 		as though newly collected and unprocessed"""
 	c = cursor()
 	c.execute(
 		"""
-			-- Trips table
-			UPDATE {trips} SET 
+			-- Blocks table
+			UPDATE {blocks} SET 
 				match_confidence = NULL,
 				match_geom = NULL,
 				clean_geom = NULL,
 				problem = '',
 				ignore = FALSE 
-			WHERE trip_id = %(trip_id)s;
+			WHERE block_id = %(block_id)s;
+
+			-- Trips table
+			DELETE FROM {trips} WHERE block_id = %(block_id)s;
 
 			-- Stop-Times table
-			DELETE FROM {stop_times} 
-			WHERE trip_id = %(trip_id)s;
+			DELETE FROM {stop_times} WHERE block_id = %(block_id)s;
 		""".format(**conf['db']['tables']),
-		{'trip_id':trip_id}
+		{'block_id':block_id}
 	)
 
 
@@ -462,6 +502,23 @@ def get_trip(trip_id):
 	return (bid,did,rid,vid)
 
 
+def get_block(block_id):
+	"""return the attributes of a stored block necessary 
+		for the construction of a new trip object"""
+	c = cursor()
+	c.execute(
+		"""
+			SELECT 
+				route_id, vehicle_id 
+			FROM {blocks}
+			WHERE block_id = %(block_id)s
+		""".format(**conf['db']['tables']), 
+		{'block_id':block_id}
+	)
+	(rid,vid,) = c.fetchone()
+	return (rid,vid)
+
+
 def get_trip_ids(min_id,max_id):
 	"""return a list of all trip ids in the specified range"""
 	c = cursor()
@@ -471,6 +528,20 @@ def get_trip_ids(min_id,max_id):
 			FROM {trips}
 			WHERE trip_id BETWEEN %(min)s AND %(max)s 
 			ORDER BY trip_id DESC
+		""".format(**conf['db']['tables']),
+		{'min':min_id,'max':max_id}
+	)
+	return [ result for (result,) in c.fetchall() ]
+
+def get_block_ids(min_id,max_id):
+	"""return a list of all block ids in the specified range"""
+	c = cursor()
+	c.execute(
+		"""
+			SELECT block_id 
+			FROM {blocks}
+			WHERE block_id BETWEEN %(min)s AND %(max)s 
+			ORDER BY block_id DESC
 		""".format(**conf['db']['tables']),
 		{'min':min_id,'max':max_id}
 	)
@@ -493,7 +564,23 @@ def trip_exists(trip_id):
 	return existence
 
 
-def get_vehicles(trip_id):
+def block_exists(block_id):
+	"""check whether a block exists in the database, 
+		returning boolean"""
+	c = cursor()
+	c.execute(
+		"""
+			SELECT EXISTS (
+				SELECT * FROM {blocks} 
+				WHERE block_id = %(block_id)s)
+		""".format(**conf['db']['tables']),
+		{'block_id':block_id}
+	)
+	(existence,) = c.fetchone()
+	return existence
+
+
+def get_vehicles(block_id):
 	"""returns full projected vehicle linestring and times"""
 	c = cursor()
 	# get the trip geometry and timestamps
@@ -503,11 +590,11 @@ def get_vehicles(trip_id):
 				uid, ST_Y(geom) AS lat, ST_X(geom) AS lon, report_time,
 				ST_Transform(geom,%(EPSG)s) AS geom
 			FROM {vehicles} 
-			WHERE trip_id = %(trip_id)s
+			WHERE block_id = %(block_id)s
 			ORDER BY report_time ASC;
 		""".format(**conf['db']['tables']),
 		{
-			'trip_id':trip_id,
+			'block_id':block_id,
 			'EPSG':conf['localEPSG']
 		}
 	)

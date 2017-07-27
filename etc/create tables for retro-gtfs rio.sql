@@ -1,10 +1,10 @@
 ﻿/*
-create the blocks table from python output
+create the blocks table from python output, and do all that follows
 */
 
 -- read in the results from Python
-DROP TABLE IF EXISTS rio2014_blocks;
-CREATE TABLE rio2014_blocks (
+DROP TABLE IF EXISTS rio2017_blocks;
+CREATE TABLE rio2017_blocks (
 	-- to be populated from csv vv
 	block_id integer PRIMARY KEY,
 	vehicle_id varchar,
@@ -14,100 +14,61 @@ CREATE TABLE rio2014_blocks (
 	-- to be populated from csv ^^
 	-- comes later vv
 	orig_geom geometry(LINESTRING,32723),	-- geometry of all vehicle points
+	clean_geom geometry(LINESTRING,32723), -- geometry of points used in map matching
+	match_geom geometry(LINESTRING,32723), -- map-matched route geometry
+	match_confidence real, -- 0 - 1
 	-- for manual cleaning vv
-	ignore boolean DEFAULT FALSE, -- ignore this block during processing?
-	breakzones geometry(GEOMETRYCOLLECTION,32723), -- manually identified trip end zones
-	is_trip boolean DEFAULT FALSE, -- manually identifed, no splitting necessary
-	km real -- length of geometry 
+	ignore boolean DEFAULT FALSE, -- ignore this block during processing/extraction?
+	km real, -- length of geometry
+	problem text -- records any problems that cause this ot to be used
 );
-COPY rio2014_blocks (block_break_reasons, block_id, vehicle_id, route_id, vehicle_uids) 
-FROM '/home/nate/rio/2014blocks.csv' CSV HEADER;
+COPY rio2017_blocks (block_break_reasons, block_id, vehicle_id, route_id, vehicle_uids) 
+FROM '/home/nate/rio/2017blocks.csv' CSV HEADER;
 
-CREATE INDEX ON rio2014_blocks (km);
-CREATE INDEX ON rio2014_blocks (ignore);
-CREATE INDEX ON rio2014_blocks USING GIST (breakzones);
+CREATE INDEX ON rio2017_blocks ();
 
 -- populate geometry column with one big join/update
+/*
+-- this isn't necessary and takes too long
 WITH geoms AS (
 	SELECT 
 		b.block_id,
-		ST_Transform(ST_MakeLine(v.geom ORDER BY datahora ASC),32723) AS geom
-	FROM rio2014_blocks AS b JOIN rio2014_vehicles AS v
+		ST_Transform(ST_MakeLine(v.geom ORDER BY report_time ASC),32723) AS geom
+	FROM rio2017_blocks AS b JOIN rio2017_vehicles AS v
 		ON v.uid = ANY (b.vehicle_uids)
-	WHERE b.orig_geom IS NULL
+	WHERE b.orig_geom IS NULL AND b.block_id BETWEEN 205000 AND 210000
 	GROUP BY b.block_id
 )
-UPDATE rio2014_blocks SET orig_geom = geoms.geom 
-FROM geoms WHERE rio2014_blocks.block_id = geoms.block_id;
+UPDATE rio2017_blocks SET orig_geom = geoms.geom 
+FROM geoms WHERE rio2017_blocks.block_id = geoms.block_id;
 
-UPDATE rio2014_blocks SET km = ST_Length(orig_geom)/1000
+UPDATE rio2017_blocks SET km = ST_Length(orig_geom)/1000
 WHERE km IS NULL AND orig_geom IS NOT NULL;
+*/
 
-
-
-
-
-
-
--- read in the results from Python
+-- create an empty trips table, to be filled block by block
+-- as they are processed
 DROP TABLE IF EXISTS rio2017_trips;
 CREATE TABLE rio2017_trips (
-	-- to be populated from csv vv
-	trip_id integer PRIMARY KEY,
+	trip_id numeric PRIMARY KEY,
 	block_id integer,
-	vehicle_id varchar,
-	route_id varchar,
-	vehicle_uids integer[],
-	-- to be populated from csv ^^
-	direction_id varchar(35),
-	-- comes later vv
 	service_id integer,
-	match_confidence real,
-	match_geom geometry(LINESTRING,32723), -- map-matched route geometry
-	orig_geom  geometry(LINESTRING,32723),	-- geometry of all points TODO kill
-	clean_geom geometry(LINESTRING,32723), -- geometry of points used in map matching TODO kill
-	problem varchar DEFAULT '',	-- description of any problems that arise
-	ignore boolean DEFAULT FALSE,	-- ignore this vehicle during processing?
-	azimuth real, 			-- azimuth for pretty rendering
-	trip_break_reasons text[]
-);
-COPY rio2017_trips (trip_break_reasons, block_break_reasons, trip_id, block_id, vehicle_id, route_id, vehicle_uids) 
-FROM '/home/nate/rio/2017trips.csv' CSV HEADER;
-
--- populate geometry column with one big join/update
-WITH geoms AS (
-	SELECT 
-		t.trip_id,
-		ST_Transform(ST_MakeLine(v.geom),32723) AS geom
-	FROM rio2017_trips AS t JOIN rio2017_vehicles AS v
-		ON v.uid = ANY (t.vehicle_uids)
-	GROUP BY t.trip_id
-	ORDER BY t.trip_id
-)
-UPDATE rio2017_trips SET orig_geom = geoms.geom 
-FROM geoms WHERE rio2017_trips.trip_id = geoms.trip_id;
-
--- delete trips shorter than 100 meters
-DELETE FROM rio2017_trips 
-WHERE ST_Length(orig_geom) < 100;
-
--- set the azimuth (for visualization)
-UPDATE rio2017_trips SET azimuth = ST_Azimuth(
-	ST_StartPoint(orig_geom),
-	ST_EndPoint(orig_geom)
+	route_id text,
+	shape_geom geometry(LINESTRING,32723) -- portion of match geometry if applicable
 );
 
 /*
-Update trip_ids for vehicles
+Update block_ids for vehicles
 ...this part takes the longest probably
 */
-UPDATE rio2017_vehicles SET trip_id = NULL;
-UPDATE rio2017_vehicles SET trip_id = the_trip_id 
+UPDATE rio2017_vehicles SET block_id = NULL WHERE block_id IS NOT NULL;
+UPDATE rio2017_vehicles SET block_id = the_block_id 
 FROM (
 	SELECT 
-		trip_id AS the_trip_id, 
+		block_id AS the_block_id, 
 		unnest(vehicle_uids) AS vuid
-	FROM rio2017_trips
+	FROM rio2017_blocks
+	WHERE block_id <= 10000
 ) AS sub
 WHERE vuid = uid;
 
@@ -121,57 +82,19 @@ This includes:
 DROP TABLE IF EXISTS rio2017_stop_times;
 CREATE TABLE rio2017_stop_times(
 	uid serial PRIMARY KEY,
-	trip_id integer,
+	trip_id numeric,
+	block_id integer, -- not in GTFS but used for quick access by block
 	stop_id varchar,
 	stop_sequence integer,
-	etime double precision, -- epoch time at greenwich
-	arrival_time interval HOUR TO SECOND,
-	departure_time interval HOUR TO SECOND
+	etime double precision, -- interpolated report_time from vehicles table
+	arrival_time interval HOUR TO SECOND
 );
 CREATE INDEX rio2017_stop_times_idx ON rio2017_stop_times (trip_id);
 CLUSTER rio2017_stop_times USING rio2017_stop_times_idx;
 
 
--- now the directions table
-DROP TABLE IF EXISTS rio2017_directions;
-WITH stop_sequences AS (
-	SELECT 
-		trip_id,
-		array_agg(stop_id::text ORDER BY stop_sequence ASC) AS stops
-	FROM gtfs_2017_stop_times
-	GROUP BY trip_id
-)
-SELECT 
-	DISTINCT 
-		t.route_id,
-		r.route_short_name,
-		r.route_long_name,
-		r.route_desc,
-		r.route_url,
-		t.trip_headsign,
-		t.shape_id,
-		ss.stops
-INTO rio2017_directions
-FROM stop_sequences AS ss 
-	JOIN gtfs_2017_trips AS t
-		ON ss.trip_id = t.trip_id
-	JOIN gtfs_2017_routes AS r 
-		ON t.route_id = r.route_id
-GROUP BY t.route_id, ss.stops, t.trip_headsign, t.shape_id, r.route_short_name, r.route_url, r.route_long_name, r.route_desc;
-ALTER TABLE rio2017_directions 
-	-- primary key
-	ADD COLUMN direction_id serial PRIMARY KEY,
-	-- geometry from shapes table
-	ADD COLUMN shape geometry(LINESTRING,4326);
--- add shape geometries
-WITH shapes AS (
-	SELECT 
-		shape_id,
-		ST_MakeLine(
-			ST_SetSRID(ST_MakePoint(shape_pt_lon,shape_pt_lat),4326)
-		ORDER BY shape_pt_sequence ASC ) AS line
-	FROM gtfs_2017_shapes 
-	GROUP BY shape_id
-) UPDATE rio2017_directions SET shape = line
-FROM shapes WHERE shapes.shape_id = rio2017_directions.shape_id
+-- set arrival times in stop_times table 
+
+
+
 
