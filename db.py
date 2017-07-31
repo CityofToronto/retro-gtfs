@@ -19,8 +19,7 @@ def reconnect():
 	connection.autocommit = True
 
 def cursor():
-	"""provide a cursor randomly from one of the 
-		available connections"""
+	"""provide a cursor"""
 	return connection.cursor()
 
 def new_trip_id():
@@ -214,34 +213,46 @@ def get_stops(direction_id):
 	return stops
 
 
-def get_nearby_stops(block_id):
+def get_nearby_stops(block_id,simplification_distance=1):
 	"""return stops within 30m of a block's match geometry
 		including ID and local geometry
-		Benchmark: this takes ~ 0.10 sec for a big messy linestring"""
+		Benchmark: this takes ~ 0.10 sec for a big messy linestring
+		The buffer function sometimes returns an inexplicable error
+		for these big crazy lines, and changing things just a little
+		fix it. """
 	c = cursor()
-	c.execute(
-		"""
-			SELECT 
-				stop_id,
-				loc_geom
-			FROM {stops}
-			WHERE 
-				near_rio AND 
-				ST_Contains(
-					(
-						SELECT ST_Buffer(ST_Simplify(match_geom,1),30) 
-						FROM {blocks} 
-						WHERE block_id = %(block_id)s 
-					),
+	try:
+		c.execute(
+			"""
+				SELECT 
+					stop_id,
 					loc_geom
-				)
-		""".format(**conf['db']['tables']),
-		{ 'block_id':block_id }
-	)
+				FROM {stops}
+				WHERE 
+					near_rio AND 
+					ST_Contains(
+						(
+							SELECT ST_Buffer(ST_Simplify(match_geom,%(simp_dist)s),30) 
+							FROM {blocks} 
+							WHERE block_id = %(block_id)s 
+						),
+						loc_geom
+					)
+			""".format(**conf['db']['tables']),
+			{ 
+				'block_id':block_id,
+				'simp_dist':simplification_distance
+			}
+		)
+	except:
+		# simply simplify the line differently and try again
+		return get_nearby_stops(block_id,simplification_distance + 1)
+
 	stops = []
 	for (stop_id,geom) in c.fetchall():
 		stops.append({'id':stop_id,'geom':geom})
 	return stops
+
 
 def set_block_orig_geom(block_id,localWKBgeom):
 	"""ALL initial vehicles go in this line"""
@@ -337,12 +348,12 @@ def store_trips(block_id,route_id,trips):
 	"""store all trip-level and stop level information from the 
 		processing of a block"""	
 	c = cursor()
-	t = 0.1
+	t = 0.001
 	for trip in trips:
 		# make up a unique trip_id by adding a decimal to 
 		# the unique block_id
 		trip_id = int(block_id) + t
-		t += 0.1
+		t += 0.001
 		# the service_id is based on the day of the first stop_time
 		t1 = trip[0]['arrival']
 		service_id = math.floor( t1 / (24*60*60) )

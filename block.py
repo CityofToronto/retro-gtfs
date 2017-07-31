@@ -111,7 +111,7 @@ class Block(object):
 		match = result['matchings'][0]
 		self.match_confidence = match['confidence']
 		# report on match quality
-		print '\t',self.match_confidence
+		print '\t',self.match_confidence,'for block',self.block_id
 		# store the trip geometry
 		self.match_geom = asShape(match['geometry'])
 		# and be sure to project it correctly...
@@ -158,6 +158,8 @@ class Block(object):
 		start = time()
 		while path.length > 750:
 			subpath, path = cut(path,750)
+			if subpath.length == 0: 
+				return db.ignore_block(self.block_id,'problem cutting trip')
 			# check for nearby stops
 			for stop in self.nearby_stops:
 				stop_dist = subpath.distance(stop['geom'])
@@ -168,7 +170,7 @@ class Block(object):
 					self.add_stop(stop,stop_m,stop_dist)
 			# note that we have traversed an additional 500m
 			traversed += 750
-		print 'locating stops took ',time() - start,'for',self.block_id
+		print '\tlocating stops took ',time() - start,'for',self.block_id
 		# interpolate stop times
 		for stop in self.stops:
 			# interpolate a time
@@ -180,8 +182,7 @@ class Block(object):
 			# TODO 
 			self.to_trips()
 		else:
-			db.ignore_block(self.block_id,'fewer than two stop times estimated')
-		return
+			return db.ignore_block(self.block_id,'fewer than two stop times estimated')
 
 	def to_trips(self):
 		"""break the block into distinct trips, setting them in
@@ -198,10 +199,15 @@ class Block(object):
 		for stop in self.stops: 
 			# is this stop_id in this trip yet?
 			sid = stop['id']
+			# stop has not occured yet in this trip
 			if sid not in trip_ids:
 				trip_stops.append(stop)
 				trip_ids.append(sid)
-			else: # trip already has this stop
+			# stop was followed immediately by itself
+			elif len(trip_stops) == 1:
+				pass
+			# trip has at least two stops before repeating
+			else:
 				self.trips.append(trip_stops)
 				trip_stops = [stop]
 				trip_ids = [sid]
@@ -303,8 +309,8 @@ class Block(object):
 
 	def interpolate_time(self,stop):
 		"""get the time for a stop by doing an interpolation between 
-			vehicle locations. We already know the m of the stop
-			and of the vehicles on the trip/track"""
+			vehicle locations. We already know the m (in meters) of the
+			stop and of the vehicles on the trip/track"""
 		# iterate over the segments of the trip, looking for the segment
 		# which holds the stop of interest
 		first = True
@@ -331,12 +337,13 @@ class Block(object):
 		# between any waypoints. This is probably a precision issue and the 
 		# stop should be right off one of the ends. Add 20 seconds as a 
 		# guestimate for extra time
+		# vv stop is off the front
 		if stop['measure'] == 0:
 			return self.vehicles[0]['time'] - 20
-		elif stop['measure'] == 1:
-			return self.vehicles[-1]['time'] + 20
+		# vv stop is off the end
 		else:
-			print '\t\tstop thing failed??'
-		return None
+			print '\t\tstop off by',(stop['measure'] - self.vehicles[-1]['cum_dist']),'meters for block',self.block_id
+			return self.vehicles[-1]['time'] + 20
+
 
 

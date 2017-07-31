@@ -3,10 +3,11 @@ create the blocks table from python output, and do all that follows
 */
 
 -- read in the results from Python
-DROP TABLE IF EXISTS rio2017_blocks;
-CREATE TABLE rio2017_blocks (
+DROP TABLE IF EXISTS rio2014_blocks;
+CREATE TABLE rio2014_blocks (
 	-- to be populated from csv vv
-	block_id integer PRIMARY KEY,
+	block_id integer, -- this will be set in the next step and made a primary key
+	py_id integer, -- block_id given by python
 	vehicle_id varchar,
 	route_id varchar,
 	vehicle_uids integer[],
@@ -22,34 +23,28 @@ CREATE TABLE rio2017_blocks (
 	km real, -- length of geometry
 	problem text -- records any problems that cause this ot to be used
 );
-COPY rio2017_blocks (block_break_reasons, block_id, vehicle_id, route_id, vehicle_uids) 
-FROM '/home/nate/rio/2017blocks.csv' CSV HEADER;
+COPY rio2014_blocks (block_break_reasons, py_id, vehicle_id, route_id, vehicle_uids) 
+FROM '/home/nate/rio/2014blocks.csv' CSV HEADER;
 
-CREATE INDEX ON rio2017_blocks ();
-
--- populate geometry column with one big join/update
-/*
--- this isn't necessary and takes too long
-WITH geoms AS (
+-- reset block_ids, ordered by time, ASC 
+WITH new_order AS (
 	SELECT 
-		b.block_id,
-		ST_Transform(ST_MakeLine(v.geom ORDER BY report_time ASC),32723) AS geom
-	FROM rio2017_blocks AS b JOIN rio2017_vehicles AS v
-		ON v.uid = ANY (b.vehicle_uids)
-	WHERE b.orig_geom IS NULL AND b.block_id BETWEEN 205000 AND 210000
-	GROUP BY b.block_id
+		b.py_id,
+		v.report_time,
+		row_number() OVER (ORDER BY v.report_time ASC) AS row_num
+	FROM rio2014_blocks AS b JOIN rio2014_vehicles AS v
+		ON b.vehicle_uids[1] = v.uid
 )
-UPDATE rio2017_blocks SET orig_geom = geoms.geom 
-FROM geoms WHERE rio2017_blocks.block_id = geoms.block_id;
+UPDATE rio2014_blocks SET block_id = row_num
+FROM new_order WHERE new_order.py_id = rio2014_blocks.py_id;
 
-UPDATE rio2017_blocks SET km = ST_Length(orig_geom)/1000
-WHERE km IS NULL AND orig_geom IS NOT NULL;
-*/
+ALTER TABLE rio2014_blocks ADD PRIMARY KEY (block_id);
+
 
 -- create an empty trips table, to be filled block by block
 -- as they are processed
-DROP TABLE IF EXISTS rio2017_trips;
-CREATE TABLE rio2017_trips (
+DROP TABLE IF EXISTS rio2014_trips;
+CREATE TABLE rio2014_trips (
 	trip_id numeric PRIMARY KEY,
 	block_id integer,
 	service_id integer,
@@ -61,14 +56,14 @@ CREATE TABLE rio2017_trips (
 Update block_ids for vehicles
 ...this part takes the longest probably
 */
-UPDATE rio2017_vehicles SET block_id = NULL WHERE block_id IS NOT NULL;
-UPDATE rio2017_vehicles SET block_id = the_block_id 
+--UPDATE rio2014_vehicles SET block_id = NULL WHERE block_id IS NOT NULL;
+UPDATE rio2014_vehicles SET block_id = the_block_id 
 FROM (
 	SELECT 
 		block_id AS the_block_id, 
 		unnest(vehicle_uids) AS vuid
-	FROM rio2017_blocks
-	WHERE block_id <= 10000
+	FROM rio2014_blocks
+	--WHERE block_id BETWEEN 270000 AND 280000
 ) AS sub
 WHERE vuid = uid;
 
@@ -79,8 +74,8 @@ This includes:
 - stop_times table for storing data
 */
 
-DROP TABLE IF EXISTS rio2017_stop_times;
-CREATE TABLE rio2017_stop_times(
+DROP TABLE IF EXISTS rio2014_stop_times;
+CREATE TABLE rio2014_stop_times(
 	uid serial PRIMARY KEY,
 	trip_id numeric,
 	block_id integer, -- not in GTFS but used for quick access by block
@@ -89,12 +84,8 @@ CREATE TABLE rio2017_stop_times(
 	etime double precision, -- interpolated report_time from vehicles table
 	arrival_time interval HOUR TO SECOND
 );
-CREATE INDEX rio2017_stop_times_idx ON rio2017_stop_times (trip_id);
-CLUSTER rio2017_stop_times USING rio2017_stop_times_idx;
-
-
--- set arrival times in stop_times table 
-
+CREATE INDEX rio2014_stop_times_idx ON rio2014_stop_times (trip_id);
+CLUSTER rio2014_stop_times USING rio2014_stop_times_idx;
 
 
 
