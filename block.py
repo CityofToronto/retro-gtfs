@@ -153,24 +153,34 @@ class Block(object):
 		path = self.match_geom
 		traversed = 0
 		# while there is more than 750m of path remaining
-		# this loop takes more than a second!
-		from time import time
-		start = time()
 		while path.length > 750:
 			subpath, path = cut(path,750)
 			if subpath.length == 0: 
 				return db.ignore_block(self.block_id,'problem cutting trip')
+			# create parallel offset to right for side checking
+			try:
+				# this fails for self-overlapping lines
+				offset = subpath.parallel_offset(0.1,'right',1,2,0.1)
+			except:
+				# so skip this for failed segments
+				offset = subpath
 			# check for nearby stops
 			for stop in self.nearby_stops:
 				stop_dist = subpath.distance(stop['geom'])
-				if stop_dist <= 30:
+				if (
+						(stop_dist <= 30 and not stop['is_cluster'])
+						or 
+						(stop_dist <= 50 and stop['is_cluster'])
+					):
 					# the stop is close to the line!
+					# skip unclustered stops on the left side of the line
+					if (not stop['is_cluster']) and offset.distance(stop['geom']) > stop_dist:
+						continue
 					# find the measure along the total path
 					stop_m = traversed + subpath.project(stop['geom'])
 					self.add_stop(stop,stop_m,stop_dist)
 			# note that we have traversed an additional 500m
 			traversed += 750
-		print '\tlocating stops took ',time() - start,'for',self.block_id
 		# interpolate stop times
 		for stop in self.stops:
 			# interpolate a time
@@ -179,7 +189,6 @@ class Block(object):
 		self.stops = sorted(self.stops, key=lambda k: k['arrival']) 
 		# there is more than one stop, right?
 		if len(self.stops) > 1:
-			# TODO 
 			self.to_trips()
 		else:
 			return db.ignore_block(self.block_id,'fewer than two stop times estimated')
@@ -211,6 +220,9 @@ class Block(object):
 				self.trips.append(trip_stops)
 				trip_stops = [stop]
 				trip_ids = [sid]
+		# if the stops never repeated:
+		if len(trip_stops) >= 2:
+			self.trips.append(trip_stops)
 		db.store_trips(self.block_id,self.route_id,self.trips)
 
 				

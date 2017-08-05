@@ -226,17 +226,17 @@ def get_nearby_stops(block_id,simplification_distance=1):
 			"""
 				SELECT 
 					stop_id,
-					loc_geom
+					ARRAY_LENGTH(former_stop_ids,1) > 1 AS is_cluster,
+					centroid
 				FROM {stops}
 				WHERE 
-					near_rio AND 
-					ST_Contains(
+					ST_Intersects(
 						(
-							SELECT ST_Buffer(ST_Simplify(match_geom,%(simp_dist)s),30) 
+							SELECT ST_Simplify(match_geom,%(simp_dist)s) 
 							FROM {blocks} 
 							WHERE block_id = %(block_id)s 
 						),
-						loc_geom
+						the_geom -- buffer geometry
 					)
 			""".format(**conf['db']['tables']),
 			{ 
@@ -249,8 +249,8 @@ def get_nearby_stops(block_id,simplification_distance=1):
 		return get_nearby_stops(block_id,simplification_distance + 1)
 
 	stops = []
-	for (stop_id,geom) in c.fetchall():
-		stops.append({'id':stop_id,'geom':geom})
+	for (stop_id,is_cluster,geom) in c.fetchall():
+		stops.append({'id':stop_id,'is_cluster':is_cluster,'geom':geom})
 	return stops
 
 

@@ -27,4 +27,16 @@ def cut(line, distance):
 	# this can fail if the line doubles back on itself.
 	print "FAILURE IN LINE CUTTING"
 	return (LineString(),LineString())
-		
+	
+def cut2(line,distance1,distance2):
+	"""cut a line in two places, returning the middle"""
+	if distance1 < distance2:
+		p1,p2 = cut(line,distance1)
+		p2,p3 = cut(p2,distance2)
+		return p2
+	elif distance2 < distance1:
+		p1,p2 = cut(line,distance2)
+		p2,p3 = cut(p2,distance1)
+		return p2
+	else:
+		return LineString()
