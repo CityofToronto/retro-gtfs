@@ -7,7 +7,7 @@ from conf import conf
 from shapely.wkb import loads as loadWKB, dumps as dumpWKB
 from shapely.ops import transform as reproject
 from shapely.geometry import asShape, Point, LineString
-from geom import cut
+from geom import cut, cut2
 
 
 class Block(object):
@@ -217,12 +217,26 @@ class Block(object):
 				pass
 			# trip has at least two stops before repeating
 			else:
-				self.trips.append(trip_stops)
+				# get the subset of the line representing this trip
+				trip_shape = cut2(
+					self.match_geom,
+					trip_stops[0]['measure'],
+					trip_stops[-1]['measure']
+				)
+				trip_wkb = dumpWKB(trip_shape,hex=True)
+				self.trips.append({'stops':trip_stops,'geom':trip_wkb})
 				trip_stops = [stop]
 				trip_ids = [sid]
-		# if the stops never repeated:
+		# if the last several stops never repeated:
 		if len(trip_stops) >= 2:
-			self.trips.append(trip_stops)
+			trip_shape = cut2(
+				self.match_geom,
+				trip_stops[0]['measure'],
+				trip_stops[-1]['measure']
+			)
+			trip_wkb = dumpWKB(trip_shape,hex=True)
+			self.trips.append({'stops':trip_stops,'geom':trip_wkb})
+		# store
 		db.store_trips(self.block_id,self.route_id,self.trips)
 
 				

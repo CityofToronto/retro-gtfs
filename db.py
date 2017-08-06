@@ -355,23 +355,31 @@ def store_trips(block_id,route_id,trips):
 		trip_id = int(block_id) + t
 		t += 0.001
 		# the service_id is based on the day of the first stop_time
-		t1 = trip[0]['arrival']
+		t1 = trip['stops'][0]['arrival']
 		service_id = math.floor( t1 / (24*60*60) )
 		# first handle the trip
 		c.execute("""
-				INSERT INTO {trips} ( trip_id, block_id, service_id, route_id )
-				VALUES ( %(trip_id)s, %(block_id)s, %(service_id)s, %(route_id)s );
+				INSERT INTO {trips} ( 
+					trip_id, block_id, service_id, route_id, 
+					shape_geom 
+				)
+				VALUES ( 
+					%(trip_id)s, %(block_id)s, %(service_id)s, %(route_id)s, 
+					ST_SetSRID(%(geom)s::geometry,%(localEPSG)s)
+				);
 			""".format(**conf['db']['tables']),
 			{
 				'trip_id':trip_id,
 				'block_id':block_id,
 				'service_id':service_id,
-				'route_id':route_id
+				'route_id':route_id,
+				'geom':trip['geom'],
+				'localEPSG':conf['localEPSG']
 			}
 		)
 		# then handle the stops
 		seq = 1
-		for stop in trip:	
+		for stop in trip['stops']:	
 			c.execute("""
 					INSERT INTO {stop_times} 
 						( trip_id, block_id, stop_id, etime, stop_sequence )
