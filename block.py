@@ -50,8 +50,8 @@ class Block(object):
 			v['geom'] = loadWKB(v['geom'],hex=True)
 			v['ignore'] = False
 		# update the pre-cleaning geometry
-		# TODO remove for speed
-		db.set_block_orig_geom(self.block_id,self.get_geom())
+		# TODO bring back for debugging
+		#db.set_block_orig_geom(self.block_id,self.get_geom())
 		# calculate vector of segment speeds
 		self.segment_speeds = self.get_segment_speeds()
 		# check for very short blocks
@@ -67,7 +67,8 @@ class Block(object):
 			# update the segment speeds for the next iteration
 			self.segment_speeds = self.get_segment_speeds()
 		# block is clean, so store the cleaned line and begin matching
-		db.set_block_clean_geom(self.block_id,self.get_geom())
+		# TODO bring back for debugging
+		#db.set_block_clean_geom(self.block_id,self.get_geom())
 		self.match()
 
 	def get_geom(self):
@@ -223,6 +224,10 @@ class Block(object):
 					trip_stops[0]['measure'],
 					trip_stops[-1]['measure']
 				)
+				# simplify for space, as this is purely for visual output
+				# and is the largest file in the GTFS output
+				trip_shape = trip_shape.simplify(5)
+				# dump to hex
 				trip_wkb = dumpWKB(trip_shape,hex=True)
 				self.trips.append({'stops':trip_stops,'geom':trip_wkb})
 				trip_stops = [stop]

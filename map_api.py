@@ -32,11 +32,20 @@ def map_match(vehicles,include_times=True):
 	}
 	if include_times:
 		options['timestamps'] = times
-	response = requests.get(
-		conf['OSRMserver']['url']+'/match/v1/transit/'+coords,
-		params=options,
-		timeout=conf['OSRMserver']['timeout']
-	)
+	try:
+		response = requests.get(
+			conf['OSRMserver']['url']+'/match/v1/transit/'+coords,
+			params=options,
+			timeout=conf['OSRMserver']['timeout']
+		)
+	# fall back on localhosted server in case of shit internet
+	# connection at the covington house
+	except:
+		response = requests.get(
+			'http://localhost:5001'+'/match/v1/transit/'+coords,
+			params=options,
+			timeout=conf['OSRMserver']['timeout']
+		)
 	# parse the result
 	j = json.loads(response.text)
 	# see if there is more than one match. If there is, try again 

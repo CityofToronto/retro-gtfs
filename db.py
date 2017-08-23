@@ -546,7 +546,7 @@ def get_trip_ids(min_id,max_id):
 			SELECT trip_id 
 			FROM {trips}
 			WHERE trip_id BETWEEN %(min)s AND %(max)s 
-			ORDER BY trip_id DESC
+			ORDER BY trip_id ASC
 		""".format(**conf['db']['tables']),
 		{'min':min_id,'max':max_id}
 	)
@@ -560,7 +560,7 @@ def get_block_ids(min_id,max_id):
 			SELECT block_id 
 			FROM {blocks}
 			WHERE block_id BETWEEN %(min)s AND %(max)s 
-			ORDER BY block_id DESC
+			ORDER BY block_id ASC
 		""".format(**conf['db']['tables']),
 		{'min':min_id,'max':max_id}
 	)

@@ -43,7 +43,7 @@ elif mode == 'range':
 	max_procs = int(raw_input('max processes --> '))
 	# create a pool of workers and pass them the data
 	p = mp.Pool(max_procs)
-	p.map(process_block,block_ids)
+	p.map(process_block,block_ids,chunksize=1)
 	print 'COMPLETED!'
 
 else:
